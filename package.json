@@ -1,0 +1,10 @@
+{
+  "name": "pwa-extension-monorepo",
+  "private": true,
+  "scripts": {
+    "dev:pwa": "pnpm -F pwa dev",
+    "dev:ext": "pnpm -F extension dev",
+    "build:pwa": "pnpm -F pwa build",
+    "build:ext": "pnpm -F extension build"
+  }
+}
