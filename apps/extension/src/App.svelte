@@ -1,27 +1,22 @@
 <script lang="ts">
-  /**
-   * Main entry point for the Browser Extension Popup.
-   * Displays text captured via the browser's context menu.
-   */
   import { onMount } from 'svelte';
   import { _, isLoading, waitLocale } from 'svelte-i18n';
   import { SharedComponent } from '@workspace/shared';
   import '@workspace/shared';
   import './app.css';
 
-  // Reactive state for the captured text
   let capturedText = $state('');
 
+  /**
+   * The popup reads the latest selection saved by the background script.
+   * Storage is the handoff point because the popup can be opened long after
+   * the originating context-menu action completed.
+   */
   onMount(async () => {
-    // Ensure translations are loaded before rendering
     await waitLocale();
 
-    /**
-     * Retrieve captured text from Chrome's local storage.
-     * The data is populated by the background service worker.
-     */
     if (typeof chrome !== 'undefined' && chrome.storage) {
-      chrome.storage.local.get(['sharedText'], (result) => {
+      chrome.storage.local.get(['sharedText'], (result: { [key: string]: any }) => {
         capturedText = result.sharedText || '';
       });
     }

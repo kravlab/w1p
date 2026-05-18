@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.svelte-kit/
+public/
+package.json
+package-lock.json
+.history/
+.superpowers/
+docs/

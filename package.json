@@ -1,10 +1,30 @@
 {
   "name": "pwa-extension-monorepo",
+  "version": "0.1.1",
   "private": true,
+  "type": "module",
   "scripts": {
+    "prepare": "husky",
     "dev:pwa": "pnpm -F pwa dev",
     "dev:ext": "pnpm -F extension dev",
     "build:pwa": "pnpm -F pwa build",
-    "build:ext": "pnpm -F extension build"
+    "build:ext": "pnpm -F extension build",
+    "test": "pnpm -r --if-present test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "check": "pnpm -r check",
+    "changelog": "git-cliff --tag ${npm_package_version:-unreleased} -o CHANGELOG.md",
+    "version": "pnpm changelog && git add CHANGELOG.md"
+  },
+  "devDependencies": {
+    "eslint": "^10.3.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-svelte": "^3.17.1",
+    "git-cliff": "^2.13.1",
+    "globals": "^17.6.0",
+    "husky": "^9.1.7",
+    "prettier": "^3.8.3",
+    "prettier-plugin-svelte": "^3.5.1",
+    "typescript-eslint": "^8.59.1"
   }
 }

@@ -1,0 +1,15 @@
+
+> pwa-extension-monorepo@ check /home/vk/projects/w1p
+> pnpm -r check
+
+Scope: 3 of 4 workspace projects
+apps/extension check$ svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json
+apps/pwa check$ svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json
+apps/pwa check: Loading svelte-check in workspace: /home/vk/projects/w1p/apps/pwa
+apps/pwa check: Getting Svelte diagnostics...
+apps/pwa check: svelte-check found 0 errors and 0 warnings
+apps/extension check: Loading svelte-check in workspace: /home/vk/projects/w1p/apps/extension
+apps/extension check: Getting Svelte diagnostics...
+apps/extension check: svelte-check found 0 errors and 0 warnings
+apps/pwa check: Done
+apps/extension check: Done
