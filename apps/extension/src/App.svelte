@@ -26,7 +26,11 @@
 <main class="w-[320px] min-h-[260px] bg-gray-50 flex items-center justify-center p-5 font-sans">
   <div class="text-center w-full">
     {#if $isLoading}
-      <div class="flex items-center justify-center space-x-2 animate-pulse" aria-hidden="true">
+      <div
+        class="flex items-center justify-center space-x-2 animate-pulse"
+        role="status"
+        aria-label="Loading"
+      >
         <div class="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>
         <div class="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>
         <div class="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>

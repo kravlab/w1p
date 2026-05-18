@@ -19,16 +19,21 @@
     fetchDefinition,
     getDictionaryLogs,
     clearDictionaryLogs,
+    getSearchHistory,
     mapPhoneticsToSavedPronunciations,
+    recordSearchHistory,
     removeSavedSense,
     saveSense,
     sectionDictionaryLogs,
     type DictionaryLogType,
     type DictionaryLogEntry,
+    type DictionaryLogSource,
     type DictionarySearchResult,
     type Definition,
     type DictionaryEntry,
-    type SavedSense
+    type SavedSense,
+    type SearchHistoryEntry,
+    type SearchHistoryFailureReason
   } from '@workspace/shared';
   import { useRegisterSW } from 'virtual:pwa-register/svelte';
   import './app.css';
@@ -58,7 +63,6 @@
   const buildSha = (import.meta.env.VITE_APP_SHA || 'unknown-dev').trim();
   const buildTime = (import.meta.env.VITE_BUILD_TIME || new Date().toISOString()).trim();
 
-  let sharedData = $state({ title: '', text: '', url: '' });
   let installPrompt = $state<BeforeInstallPromptEvent | null>(null);
   let isDrawerOpen = $state(false);
   let isLogOpen = $state(false);
@@ -73,13 +77,19 @@
   let savedSearchTerm = $state('');
   let savedSortOrder = $state<'recent' | 'oldest' | 'word'>('recent');
   let logTypeFilter = $state<'all' | DictionaryLogType>('all');
+  let logSourceFilter = $state<'all' | DictionaryLogSource>('all');
   let rawSearchResult = $state<DictionarySearchResult>({ entries: [], source: 'network' });
   let searchResult = $state<DictionarySearchResult>({ entries: [], source: 'network' });
   let logEntries = $state<DictionaryLogEntry[]>([]);
   let savedSenses = $state<SavedSense[]>([]);
   let savedSenseIds = $state<string[]>([]);
   let cacheEntries = $state<Array<{ url: string; word: string; sourceUrl?: string }>>([]);
+  let searchHistory = $state<SearchHistoryEntry[]>([]);
+  let isSearchHistoryOpen = $state(false);
   let openSaveMenuKey = $state('');
+  let lastWindowScrollY = 0;
+  let isSearchChromeHidden = $state(false);
+  let isScrollTopButtonVisible = $state(false);
   let customTranslationFormKey = $state('');
   let customTranslationValue = $state('');
   let isSearching = $state(false);
@@ -100,6 +110,12 @@
     'storage_granted',
     'storage_denied',
     'storage_unsupported'
+  ];
+  const logSourceOptions: Array<'all' | DictionaryLogSource> = [
+    'all',
+    'network',
+    'cache',
+    'unknown'
   ];
 
   function canUseLocalStorage(): boolean {
@@ -153,6 +169,72 @@
     }
   }
 
+  function refreshSearchHistory(): void {
+    searchHistory = getSearchHistory();
+  }
+
+  function getVisibleSearchHistory(): SearchHistoryEntry[] {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    const matchingEntries = normalizedSearch
+      ? searchHistory.filter((entry) => entry.normalizedQuery.includes(normalizedSearch))
+      : searchHistory;
+
+    return matchingEntries.slice(0, 8);
+  }
+
+  function getSearchHistoryStatusIcon(entry: SearchHistoryEntry): string {
+    if (entry.status === 'failed') {
+      return '!';
+    }
+
+    if (entry.status === 'not_found') {
+      return '?';
+    }
+
+    return '';
+  }
+
+  function getSearchHistoryStatusClass(entry: SearchHistoryEntry): string {
+    if (entry.status === 'failed') {
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    }
+
+    if (entry.status === 'not_found') {
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    }
+
+    return 'border-slate-200 bg-white text-slate-400';
+  }
+
+  function getSearchHistoryFailureReason(
+    type: DictionaryLookupError['code']
+  ): SearchHistoryFailureReason | undefined {
+    if (type === 'network' || type === 'server') {
+      return type;
+    }
+
+    return undefined;
+  }
+
+  function recordSearchAttempt(
+    query: string,
+    status: SearchHistoryEntry['status'],
+    options: {
+      failureReason?: SearchHistoryFailureReason;
+      message?: string;
+    } = {}
+  ): void {
+    recordSearchHistory({
+      query,
+      status,
+      failureReason: options.failureReason,
+      message: options.message,
+      includeTranslations,
+      translationLanguageCode
+    });
+    refreshSearchHistory();
+  }
+
   /**
    * Replaces previous results with the latest lookup attempt.
    * Errors are surfaced as plain text because the dictionary client already
@@ -182,6 +264,7 @@
         source: searchResult.source,
         message: `Lookup succeeded for "${trimmedTerm}".`
       });
+      recordSearchAttempt(trimmedTerm, 'success');
       refreshLogs();
       refreshCacheEntries();
     } catch (e: any) {
@@ -199,6 +282,10 @@
           message: e.message,
           rawError: e
         });
+        recordSearchAttempt(trimmedTerm, e.code === 'not_found' ? 'not_found' : 'failed', {
+          failureReason: getSearchHistoryFailureReason(e.code),
+          message: e.message
+        });
       } else {
         dictionaryError = 'Something went wrong while searching. Please try again.';
         appendDictionaryLog({
@@ -207,6 +294,10 @@
           source: 'unknown',
           message: dictionaryError,
           rawError: e
+        });
+        recordSearchAttempt(trimmedTerm, 'failed', {
+          failureReason: 'unknown',
+          message: dictionaryError
         });
       }
       refreshLogs();
@@ -217,8 +308,17 @@
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Enter') {
+      isSearchHistoryOpen = false;
       performSearch();
     }
+  }
+
+  async function openSearchHistoryEntry(entry: SearchHistoryEntry): Promise<void> {
+    searchTerm = entry.query;
+    includeTranslations = entry.includeTranslations;
+    translationLanguageCode = entry.translationLanguageCode;
+    isSearchHistoryOpen = false;
+    await performSearch();
   }
 
   function handleTranslationLanguageChange(event: Event): void {
@@ -227,6 +327,16 @@
       searchResult = filterDictionarySearchResult(rawSearchResult, translationLanguageCode);
       persistSearchState();
     }
+  }
+
+  function handleLogTypeFilterChange(event: Event): void {
+    logTypeFilter = (event.currentTarget as HTMLSelectElement).value as 'all' | DictionaryLogType;
+  }
+
+  function handleLogSourceFilterChange(event: Event): void {
+    logSourceFilter = (event.currentTarget as HTMLSelectElement).value as
+      | 'all'
+      | DictionaryLogSource;
   }
 
   async function refreshPersistentStorageStatus(): Promise<void> {
@@ -454,6 +564,12 @@
     await performSearch();
   }
 
+  async function openSavedSense(word: string): Promise<void> {
+    searchTerm = word;
+    closeSaved();
+    await performSearch();
+  }
+
   async function deleteCacheEntry(url: string): Promise<void> {
     if (!confirm($_('cache_delete_confirm'))) {
       return;
@@ -475,6 +591,7 @@
   function getFilteredLogEntries(): DictionaryLogEntry[] {
     return filterDictionaryLogs(logEntries, {
       type: logTypeFilter,
+      source: logSourceFilter,
       searchTerm: logSearchTerm
     });
   }
@@ -541,13 +658,17 @@
     partOfSpeech: string,
     definition: Definition
   ): string {
+    const savedTranslationLanguageCode = buildSavedSenseTranslation(
+      definition.translations,
+      translationLanguageCode
+    )?.languageCode;
+
     return buildSavedSenseId({
       word: entry.word,
       languageCode: 'en',
       partOfSpeech,
       definition: definition.definition,
-      translationLanguageCode:
-        translationLanguageCode === 'all' ? undefined : translationLanguageCode
+      translationLanguageCode: savedTranslationLanguageCode
     });
   }
 
@@ -595,6 +716,20 @@
     definition: Definition
   ): boolean {
     return savedSenseIds.includes(getSavedSenseId(entry, partOfSpeech, definition));
+  }
+
+  /**
+   * Search-result action buttons share the same 36px hit area so the save,
+   * remove, and overflow controls stay visually aligned in the result list.
+   */
+  function getSearchResultActionButtonClass(isSaved: boolean): string {
+    return isSaved
+      ? 'inline-flex h-9 w-9 items-center justify-center rounded-xl border border-rose-200 bg-rose-50 text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:cursor-default disabled:bg-rose-50 disabled:text-rose-300'
+      : 'inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-default disabled:bg-slate-100 disabled:text-slate-500';
+  }
+
+  function getSearchResultSaveButtonIcon(isSaved: boolean): string {
+    return isSaved ? '×' : '+';
   }
 
   /**
@@ -657,7 +792,6 @@
     }
 
     const selectedTranslationLanguage = getSelectedTranslationLanguage();
-    removeSavedSense(getCustomSavedSenseId(entry, partOfSpeech, definition));
     saveSense({
       word: entry.word,
       languageCode: 'en',
@@ -688,6 +822,10 @@
     partOfSpeech: string,
     definition: Definition
   ): void {
+    if (!confirm($_('saved_remove_confirm'))) {
+      return;
+    }
+
     removeSavedSense(getCustomSavedSenseId(entry, partOfSpeech, definition));
     closeCustomTranslationForm();
     refreshSavedSenses();
@@ -737,16 +875,20 @@
    * translation form.
    */
   function handleDocumentPointerDown(event: PointerEvent): void {
-    if (!openSaveMenuKey) {
+    if (!openSaveMenuKey && !isSearchHistoryOpen) {
       return;
     }
 
     const target = event.target;
-    if (target instanceof Element && target.closest('[data-save-menu]')) {
-      return;
-    }
+    if (target instanceof Element) {
+      if (openSaveMenuKey && !target.closest('[data-save-menu]')) {
+        openSaveMenuKey = '';
+      }
 
-    openSaveMenuKey = '';
+      if (isSearchHistoryOpen && !target.closest('[data-search-history]')) {
+        isSearchHistoryOpen = false;
+      }
+    }
   }
 
   function exportLogs(): void {
@@ -783,6 +925,37 @@
     URL.revokeObjectURL(blobUrl);
   }
 
+  /**
+   * Long result pages should keep reading space clear while moving down, but
+   * the primary search controls must return as soon as the user scrolls back up.
+   */
+  function handleWindowScroll(): void {
+    const currentScrollY = Math.max(window.scrollY, 0);
+    const isScrollingDown = currentScrollY > lastWindowScrollY;
+    const isScrollingUp = currentScrollY < lastWindowScrollY;
+
+    if (currentScrollY < 80 || isScrollingUp) {
+      isSearchChromeHidden = false;
+    } else if (isScrollingDown) {
+      isSearchChromeHidden = true;
+    }
+
+    isScrollTopButtonVisible = currentScrollY >= 240;
+    lastWindowScrollY = currentScrollY;
+  }
+
+  /**
+   * The explicit top jump mirrors browser-reader behavior: after activating it,
+   * the controls are visible immediately instead of waiting for the smooth
+   * scroll animation to emit another scroll event.
+   */
+  function scrollToPageTop(): void {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    lastWindowScrollY = 0;
+    isSearchChromeHidden = false;
+    isScrollTopButtonVisible = false;
+  }
+
   const { needRefresh, updateServiceWorker } = useRegisterSW({
     onRegistered(r: ServiceWorkerRegistration | undefined) {
       if (r) console.info('PWA Service Worker registered');
@@ -807,17 +980,18 @@
       await waitLocale();
       restoreSearchState();
       refreshLogs();
+      refreshSearchHistory();
       refreshSavedSenses();
       await refreshCacheEntries();
       await refreshPersistentStorageStatus();
 
       const params = new URLSearchParams(window.location.search);
-      if (params.has('title') || params.has('text') || params.has('url')) {
-        sharedData = {
-          title: params.get('title') || '',
-          text: params.get('text') || '',
-          url: params.get('url') || ''
-        };
+      if (params.has('text')) {
+        const sharedText = params.get('text') || '';
+
+        if (sharedText) {
+          searchTerm = sharedText;
+        }
       }
     })();
 
@@ -862,6 +1036,7 @@
     window.addEventListener('appinstalled', handleAppInstalled);
     window.addEventListener('error', handleWindowError);
     window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    window.addEventListener('scroll', handleWindowScroll, { passive: true });
     document.addEventListener('pointerdown', handleDocumentPointerDown, true);
 
     return () => {
@@ -869,6 +1044,7 @@
       window.removeEventListener('appinstalled', handleAppInstalled);
       window.removeEventListener('error', handleWindowError);
       window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+      window.removeEventListener('scroll', handleWindowScroll);
       document.removeEventListener('pointerdown', handleDocumentPointerDown, true);
     };
   });
@@ -902,6 +1078,17 @@
         aria-label={$_('close_menu')}
         onclick={closeDrawer}
       ></button>
+    {/if}
+
+    {#if isScrollTopButtonVisible}
+      <button
+        type="button"
+        class="fixed bottom-5 right-5 z-20 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 text-xl font-black text-white shadow-xl ring-1 ring-white/50 transition hover:-translate-y-0.5 hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        aria-label={$_('scroll_to_top')}
+        onclick={scrollToPageTop}
+      >
+        ↑
+      </button>
     {/if}
 
     {#if isLogOpen}
@@ -947,7 +1134,7 @@
         </header>
 
         <div class="flex-1 overflow-y-auto px-6 py-5">
-          <div class="mb-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
+          <div class="mb-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px_160px]">
             <input
               type="text"
               bind:value={logSearchTerm}
@@ -955,10 +1142,22 @@
               class="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
             />
             <select
-              bind:value={logTypeFilter}
+              value={logTypeFilter}
+              onchange={handleLogTypeFilterChange}
               class="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 outline-none transition focus:border-slate-400"
+              aria-label="Type"
             >
               {#each logTypeOptions as option (option)}
+                <option value={option}>{option}</option>
+              {/each}
+            </select>
+            <select
+              value={logSourceFilter}
+              onchange={handleLogSourceFilterChange}
+              class="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 outline-none transition focus:border-slate-400"
+              aria-label={$_('log_source')}
+            >
+              {#each logSourceOptions as option (option)}
                 <option value={option}>{option}</option>
               {/each}
             </select>
@@ -1247,13 +1446,22 @@
                         {/if}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      class="rounded-xl border border-rose-200 px-3 py-2 text-sm font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-50"
-                      onclick={() => deleteSavedSense(savedSense.id)}
-                    >
-                      {$_('saved_remove')}
-                    </button>
+                    <div class="flex gap-2">
+                      <button
+                        type="button"
+                        class="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+                        onclick={() => openSavedSense(savedSense.word)}
+                      >
+                        {$_('saved_open')}
+                      </button>
+                      <button
+                        type="button"
+                        class="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-100"
+                        onclick={() => deleteSavedSense(savedSense.id)}
+                      >
+                        {$_('saved_remove')}
+                      </button>
+                    </div>
                   </div>
 
                   <p class="mt-4 text-sm font-medium text-slate-900">{savedSense.definition}</p>
@@ -1336,14 +1544,6 @@
               onclick={closeDrawer}>{$_('menu_dictionary')}</a
             >
 
-            {#if sharedData.text || sharedData.url}
-              <a
-                href="#shared-data"
-                class="block rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                onclick={closeDrawer}>{$_('menu_shared_data')}</a
-              >
-            {/if}
-
             {#if installPrompt}
               <button
                 type="button"
@@ -1357,20 +1557,6 @@
             <button
               type="button"
               class="block w-full rounded-2xl border border-slate-200 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-              onclick={openLog}
-            >
-              {$_('menu_log')}
-            </button>
-            <button
-              type="button"
-              class="block w-full rounded-2xl border border-slate-200 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-              onclick={openCache}
-            >
-              {$_('menu_cache')}
-            </button>
-            <button
-              type="button"
-              class="block w-full rounded-2xl border border-slate-200 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
               onclick={openSaved}
             >
               {$_('menu_saved')}
@@ -1379,6 +1565,26 @@
 
           <div class="mt-auto border-t border-slate-200 px-5 py-4">
             <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
+              {$_('menu_development')}
+            </p>
+            <div class="mt-3 grid gap-2">
+              <button
+                type="button"
+                class="block w-full rounded-2xl border border-slate-200 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                onclick={openLog}
+              >
+                {$_('menu_log')}
+              </button>
+              <button
+                type="button"
+                class="block w-full rounded-2xl border border-slate-200 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                onclick={openCache}
+              >
+                {$_('menu_cache')}
+              </button>
+            </div>
+
+            <p class="mt-5 text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
               {$_('menu_status')}
             </p>
             <div class="mt-3 flex items-center gap-3 rounded-2xl bg-emerald-50 px-4 py-3 text-left">
@@ -1429,37 +1635,68 @@
 
       <section class="flex min-h-screen flex-1 items-start justify-center p-4 lg:p-8">
         <div class="w-full max-w-4xl">
-          <header class="mb-5 flex items-center gap-3">
-            <button
-              type="button"
-              class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
-              aria-label={$_('open_menu')}
-              onclick={openDrawer}
-            >
-              <span class="text-xl leading-none">☰</span>
-            </button>
-            <div class="min-w-0">
-              <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
-                {$_('welcome')}
-              </p>
-              <h1 class="truncate text-2xl font-black text-slate-900">{$_('pwa_page')}</h1>
-            </div>
-          </header>
-
-          <div class="bg-white p-8 rounded-2xl shadow-xl w-full text-center">
-            <section class="mb-8" id="dictionary">
+          <!-- Keep the menu button and search controls near the viewport, but
+               hide them while scrolling down so long result lists keep focus. -->
+          <div
+            class={`sticky top-3 z-20 mb-5 rounded-2xl border border-white/70 bg-slate-100/95 p-3 shadow-lg backdrop-blur transition-all duration-200 ease-out ${isSearchChromeHidden ? 'pointer-events-none -translate-y-[calc(100%+1rem)] opacity-0' : 'translate-y-0 opacity-100'}`}
+            data-testid="search-chrome"
+          >
+            <section class="text-center" id="dictionary">
               <div class="flex gap-2">
-                <input
-                  type="text"
-                  bind:value={searchTerm}
-                  onkeydown={handleKeydown}
-                  placeholder={$_('search_placeholder')}
-                  class="flex-1 p-3 border-2 border-gray-200 rounded-xl focus:border-blue-500 outline-none transition-all"
-                />
                 <button
-                  onclick={performSearch}
+                  type="button"
+                  class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
+                  aria-label={$_('open_menu')}
+                  onclick={openDrawer}
+                >
+                  <span class="text-xl leading-none">☰</span>
+                </button>
+                <div class="relative min-w-0 flex-1" data-search-history>
+                  <input
+                    type="text"
+                    bind:value={searchTerm}
+                    onfocus={() => (isSearchHistoryOpen = true)}
+                    oninput={() => (isSearchHistoryOpen = true)}
+                    onkeydown={handleKeydown}
+                    placeholder={$_('search_placeholder')}
+                    class="w-full rounded-xl border-2 border-gray-200 bg-white p-3 outline-none transition-all focus:border-blue-500"
+                  />
+                  {#if isSearchHistoryOpen && getVisibleSearchHistory().length}
+                    <div
+                      class="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-xl"
+                    >
+                      {#each getVisibleSearchHistory() as entry (entry.id)}
+                        <button
+                          type="button"
+                          class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition hover:bg-slate-50"
+                          onclick={() => openSearchHistoryEntry(entry)}
+                        >
+                          <span
+                            class={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-black ${getSearchHistoryStatusClass(entry)}`}
+                            aria-hidden="true"
+                          >
+                            {getSearchHistoryStatusIcon(entry)}
+                          </span>
+                          <span class="min-w-0 flex-1 truncate font-semibold text-slate-800">
+                            {entry.query}
+                          </span>
+                          {#if entry.attempts > 1}
+                            <span class="shrink-0 text-xs font-semibold text-slate-400">
+                              {entry.attempts}
+                            </span>
+                          {/if}
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+                <button
+                  onclick={() => {
+                    isSearchHistoryOpen = false;
+                    void performSearch();
+                  }}
                   disabled={isSearching}
-                  class="bg-blue-600 text-white px-6 rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 transition-all active:scale-95"
+                  class="rounded-xl bg-blue-600 px-6 font-bold text-white transition-all hover:bg-blue-700 active:scale-95 disabled:opacity-50"
                 >
                   {isSearching ? $_('searching') : $_('search_button')}
                 </button>
@@ -1485,261 +1722,251 @@
                 </select>
               </div>
               {#if dictionaryError}
-                <p class="text-red-500 text-sm mt-2 font-medium">{dictionaryError}</p>
+                <p class="mt-2 text-sm font-medium text-red-500">{dictionaryError}</p>
               {/if}
             </section>
+          </div>
 
-            {#if $needRefresh}
-              <section
-                class="mb-8 rounded-2xl border-2 border-amber-100 bg-amber-50 p-5 transition-all"
+          {#if $needRefresh}
+            <section
+              class="mb-8 rounded-2xl border-2 border-amber-100 bg-amber-50 p-5 transition-all"
+            >
+              <p class="mb-2 font-bold text-amber-900">{$_('pwa_update_ready')}</p>
+              <p class="mb-4 text-sm text-amber-800">{$_('pwa_update_description')}</p>
+              <button
+                type="button"
+                onclick={updatePwa}
+                class="w-full rounded-xl bg-amber-600 py-3 font-bold text-white shadow-lg transition-all hover:bg-amber-700 active:scale-95"
               >
-                <p class="mb-2 font-bold text-amber-900">{$_('pwa_update_ready')}</p>
-                <p class="mb-4 text-sm text-amber-800">{$_('pwa_update_description')}</p>
-                <button
-                  type="button"
-                  onclick={updatePwa}
-                  class="w-full rounded-xl bg-amber-600 py-3 font-bold text-white shadow-lg transition-all hover:bg-amber-700 active:scale-95"
-                >
-                  {$_('pwa_update_button')}
-                </button>
-              </section>
-            {/if}
+                {$_('pwa_update_button')}
+              </button>
+            </section>
+          {/if}
 
-            {#if sharedData.text || sharedData.url}
-              <SharedComponent title={$_('received_data')}>
-                <article class="space-y-2 py-1" id="shared-data">
-                  <p><span class="font-bold">{$_('share_data_title')}:</span> {sharedData.title}</p>
-                  <p><span class="font-bold">{$_('share_data_text')}:</span> {sharedData.text}</p>
-                  <p class="break-all">
-                    <span class="font-bold">{$_('share_data_url')}:</span>
-                    {sharedData.url}
-                  </p>
-                </article>
-              </SharedComponent>
-            {/if}
+          {#if isSearching}
+            <div
+              class="flex items-center justify-center space-x-2 my-8 animate-pulse"
+              aria-hidden="true"
+            >
+              <div class="w-2 h-2 bg-blue-600 rounded-full"></div>
+              <div class="w-2 h-2 bg-blue-600 rounded-full"></div>
+              <div class="w-2 h-2 bg-blue-600 rounded-full"></div>
+            </div>
+          {/if}
 
-            {#if isSearching}
-              <div
-                class="flex items-center justify-center space-x-2 my-8 animate-pulse"
-                aria-hidden="true"
-              >
-                <div class="w-2 h-2 bg-blue-600 rounded-full"></div>
-                <div class="w-2 h-2 bg-blue-600 rounded-full"></div>
-                <div class="w-2 h-2 bg-blue-600 rounded-full"></div>
-              </div>
-            {/if}
-
-            {#each searchResult.entries as entry, index (`${entry.word}-${entry.phonetic || 'no-phonetic'}-${index}`)}
-              <!-- The upstream API can return multiple entries with identical word and phonetic. -->
-              <div class="text-left mt-8 mb-4">
-                <h2 class="text-2xl font-black text-gray-900 flex items-baseline gap-2">
-                  {entry.word}
-                  {#if entry.phonetic}
-                    <span class="text-sm font-medium text-gray-400">{entry.phonetic}</span>
-                  {/if}
-                </h2>
-              </div>
-              {#each entry.meanings as meaning (meaning.partOfSpeech)}
-                <SharedComponent title={meaning.partOfSpeech}>
-                  <ul class="list-disc list-outside ml-4 space-y-3">
-                    {#each meaning.definitions as def (def.definition)}
-                      {@const customSaveKey = getCustomSavedSenseId(
-                        entry,
-                        meaning.partOfSpeech,
-                        def
-                      )}
-                      {@const savedCustomTranslation = getSavedCustomTranslation(
-                        entry,
-                        meaning.partOfSpeech,
-                        def
-                      )}
-                      <li class="text-gray-700">
-                        <div class="mb-2 flex flex-wrap items-start gap-2">
+          {#each searchResult.entries as entry, index (`${entry.word}-${entry.phonetic || 'no-phonetic'}-${index}`)}
+            <!-- The upstream API can return multiple entries with identical word and phonetic. -->
+            <div class="text-left mt-8 mb-4">
+              <h2 class="text-2xl font-black text-gray-900 flex items-baseline gap-2">
+                {entry.word}
+                {#if entry.phonetic}
+                  <span class="text-sm font-medium text-gray-400">{entry.phonetic}</span>
+                {/if}
+              </h2>
+            </div>
+            {#each entry.meanings as meaning (meaning.partOfSpeech)}
+              <SharedComponent title={meaning.partOfSpeech}>
+                <ul class="list-disc list-outside ml-4 space-y-3">
+                  {#each meaning.definitions as def (def.definition)}
+                    {@const customSaveKey = getCustomSavedSenseId(entry, meaning.partOfSpeech, def)}
+                    {@const savedCustomTranslation = getSavedCustomTranslation(
+                      entry,
+                      meaning.partOfSpeech,
+                      def
+                    )}
+                    <li class="text-gray-700">
+                      <div class="mb-2 flex flex-wrap items-start gap-2">
+                        <button
+                          type="button"
+                          class={getSearchResultActionButtonClass(
+                            isDefinitionSaved(entry, meaning.partOfSpeech, def)
+                          )}
+                          aria-label={isDefinitionSaved(entry, meaning.partOfSpeech, def)
+                            ? $_('remove_sense')
+                            : $_('save_sense')}
+                          onclick={() => toggleDefinitionSaved(entry, meaning.partOfSpeech, def)}
+                        >
+                          <span class="text-base leading-none font-black">
+                            {getSearchResultSaveButtonIcon(
+                              isDefinitionSaved(entry, meaning.partOfSpeech, def)
+                            )}
+                          </span>
+                        </button>
+                        <div class="relative" data-save-menu>
                           <button
                             type="button"
-                            class="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-default disabled:bg-slate-100 disabled:text-slate-500"
-                            onclick={() => toggleDefinitionSaved(entry, meaning.partOfSpeech, def)}
+                            class="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-default disabled:bg-slate-100 disabled:text-slate-500"
+                            aria-label={$_('save_menu_label')}
+                            aria-expanded={openSaveMenuKey === customSaveKey}
+                            onclick={() => toggleSaveMenu(customSaveKey)}
                           >
-                            {isDefinitionSaved(entry, meaning.partOfSpeech, def)
-                              ? $_('remove_sense')
-                              : $_('save_sense')}
+                            <span class="text-base leading-none">⋯</span>
                           </button>
-                          <div class="relative" data-save-menu>
+                          {#if openSaveMenuKey === customSaveKey}
+                            <div
+                              class="absolute left-0 top-full z-20 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-1 shadow-xl"
+                            >
+                              {#if canSaveCustomTranslation()}
+                                <button
+                                  type="button"
+                                  class="block w-full rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                                  onclick={() =>
+                                    openCustomTranslationForm(entry, meaning.partOfSpeech, def)}
+                                >
+                                  {$_('save_with_custom_translation')}
+                                </button>
+                              {:else}
+                                <button
+                                  type="button"
+                                  class="block w-full cursor-not-allowed rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-400"
+                                  disabled
+                                >
+                                  {$_('custom_translation_choose_language')}
+                                </button>
+                              {/if}
+                            </div>
+                          {/if}
+                        </div>
+                      </div>
+                      {#if customTranslationFormKey === customSaveKey}
+                        <form
+                          class="mb-3 flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:flex-row"
+                          onsubmit={(event) => {
+                            event.preventDefault();
+                            saveDefinitionWithCustomTranslation(entry, meaning.partOfSpeech, def);
+                          }}
+                        >
+                          <input
+                            type="text"
+                            bind:value={customTranslationValue}
+                            placeholder={$_('custom_translation_placeholder')}
+                            class="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-slate-400"
+                          />
+                          <div class="flex gap-2">
+                            <button
+                              type="submit"
+                              class="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                              disabled={!customTranslationValue.trim()}
+                            >
+                              {$_('custom_translation_save')}
+                            </button>
                             <button
                               type="button"
-                              class="rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                              aria-label={$_('save_menu_label')}
-                              aria-expanded={openSaveMenuKey === customSaveKey}
-                              onclick={() => toggleSaveMenu(customSaveKey)}
+                              class="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-white"
+                              onclick={closeCustomTranslationForm}
                             >
-                              ⋯
+                              {$_('custom_translation_cancel')}
                             </button>
-                            {#if openSaveMenuKey === customSaveKey}
-                              <div
-                                class="absolute left-0 top-full z-20 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-1 shadow-xl"
+                          </div>
+                        </form>
+                      {/if}
+                      <span class="font-medium text-gray-900">{def.definition}</span>
+                      {#if def.example}
+                        <p
+                          class="text-xs italic text-gray-500 mt-1.5 border-l-2 border-gray-100 pl-3"
+                        >
+                          "{def.example}"
+                        </p>
+                      {/if}
+                      {#if def.translations.length || savedCustomTranslation}
+                        <div class="mt-2 flex flex-wrap items-start gap-2 text-xs">
+                          <span class="font-semibold uppercase tracking-wide text-slate-500">
+                            {$_('translations_label')}
+                          </span>
+                          <div class="flex flex-wrap gap-2">
+                            {#each def.translations as translation, translationIndex (`${translation.languageCode}-${translation.word}-${translationIndex}`)}
+                              <span
+                                class="rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-700"
                               >
-                                {#if canSaveCustomTranslation()}
+                                {getTranslationText(translation.languageName, translation.word)}
+                              </span>
+                            {/each}
+                            {#if savedCustomTranslation}
+                              {#each savedCustomTranslation.words as word (`${customSaveKey}-${word}`)}
+                                <span
+                                  class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 font-medium text-amber-800"
+                                >
+                                  <span>
+                                    {getTranslationText(
+                                      savedCustomTranslation.languageName ?? '',
+                                      word
+                                    )}
+                                  </span>
                                   <button
                                     type="button"
-                                    class="block w-full rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                                    class="rounded-full px-1 text-[10px] font-bold uppercase tracking-wide text-amber-900 transition hover:bg-amber-200"
+                                    aria-label={$_('custom_translation_edit')}
                                     onclick={() =>
                                       openCustomTranslationForm(entry, meaning.partOfSpeech, def)}
                                   >
-                                    {$_('save_with_custom_translation')}
+                                    ✎
                                   </button>
-                                {:else}
                                   <button
                                     type="button"
-                                    class="block w-full cursor-not-allowed rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-400"
-                                    disabled
+                                    class="rounded-full px-1 text-[10px] font-bold uppercase tracking-wide text-amber-900 transition hover:bg-amber-200"
+                                    aria-label={$_('custom_translation_delete')}
+                                    onclick={() =>
+                                      deleteCustomTranslation(entry, meaning.partOfSpeech, def)}
                                   >
-                                    {$_('custom_translation_choose_language')}
+                                    ×
                                   </button>
-                                {/if}
-                              </div>
+                                </span>
+                              {/each}
                             {/if}
                           </div>
                         </div>
-                        {#if customTranslationFormKey === customSaveKey}
-                          <form
-                            class="mb-3 flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:flex-row"
-                            onsubmit={(event) => {
-                              event.preventDefault();
-                              saveDefinitionWithCustomTranslation(entry, meaning.partOfSpeech, def);
-                            }}
-                          >
-                            <input
-                              type="text"
-                              bind:value={customTranslationValue}
-                              placeholder={$_('custom_translation_placeholder')}
-                              class="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-slate-400"
-                            />
-                            <div class="flex gap-2">
-                              <button
-                                type="submit"
-                                class="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                                disabled={!customTranslationValue.trim()}
-                              >
-                                {$_('custom_translation_save')}
-                              </button>
-                              <button
-                                type="button"
-                                class="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-white"
-                                onclick={closeCustomTranslationForm}
-                              >
-                                {$_('custom_translation_cancel')}
-                              </button>
-                            </div>
-                          </form>
-                        {/if}
-                        <span class="font-medium text-gray-900">{def.definition}</span>
-                        {#if def.example}
-                          <p
-                            class="text-xs italic text-gray-500 mt-1.5 border-l-2 border-gray-100 pl-3"
-                          >
-                            "{def.example}"
-                          </p>
-                        {/if}
-                        {#if def.translations.length || savedCustomTranslation}
-                          <div class="mt-2 flex flex-wrap items-start gap-2 text-xs">
-                            <span class="font-semibold uppercase tracking-wide text-slate-500">
-                              {$_('translations_label')}
-                            </span>
-                            <div class="flex flex-wrap gap-2">
-                              {#each def.translations as translation, translationIndex (`${translation.languageCode}-${translation.word}-${translationIndex}`)}
-                                <span
-                                  class="rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-700"
-                                >
-                                  {getTranslationText(translation.languageName, translation.word)}
-                                </span>
-                              {/each}
-                              {#if savedCustomTranslation}
-                                {#each savedCustomTranslation.words as word (`${customSaveKey}-${word}`)}
-                                  <span
-                                    class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 font-medium text-amber-800"
-                                  >
-                                    <span>
-                                      {getTranslationText(
-                                        savedCustomTranslation.languageName ?? '',
-                                        word
-                                      )}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      class="rounded-full px-1 text-[10px] font-bold uppercase tracking-wide text-amber-900 transition hover:bg-amber-200"
-                                      aria-label={$_('custom_translation_edit')}
-                                      onclick={() =>
-                                        openCustomTranslationForm(entry, meaning.partOfSpeech, def)}
-                                    >
-                                      ✎
-                                    </button>
-                                    <button
-                                      type="button"
-                                      class="rounded-full px-1 text-[10px] font-bold uppercase tracking-wide text-amber-900 transition hover:bg-amber-200"
-                                      aria-label={$_('custom_translation_delete')}
-                                      onclick={() =>
-                                        deleteCustomTranslation(entry, meaning.partOfSpeech, def)}
-                                    >
-                                      ×
-                                    </button>
-                                  </span>
-                                {/each}
-                              {/if}
-                            </div>
-                          </div>
-                        {/if}
-                      </li>
-                    {/each}
-                  </ul>
-                </SharedComponent>
-              {/each}
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              </SharedComponent>
             {/each}
+          {/each}
 
-            {#if searchResult.entries.length}
-              <section
-                class="mt-8 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-left"
-              >
-                <p class="mt-2 text-sm text-slate-700">
-                  {#if searchResult.sourceUrl}
-                    <a
-                      href={searchResult.sourceUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      class="text-sm font-medium text-blue-700 underline decoration-blue-200 underline-offset-4"
-                    >
-                      {$_('attribution_source_link')}
-                    </a>
-                    <span class="mx-2 text-slate-300">•</span>
-                  {/if}
-                  {$_('attribution_provider_prefix')}
+          {#if searchResult.entries.length}
+            <section
+              class="mt-8 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-left"
+            >
+              <p class="mt-2 text-sm text-slate-700">
+                {#if searchResult.sourceUrl}
                   <a
-                    href="https://freedictionaryapi.com/"
+                    href={searchResult.sourceUrl}
                     target="_blank"
                     rel="noreferrer"
-                    class="font-semibold text-slate-900 underline decoration-slate-300 underline-offset-4"
+                    class="text-sm font-medium text-blue-700 underline decoration-blue-200 underline-offset-4"
                   >
-                    FreeDictionaryAPI.com
+                    {$_('attribution_source_link')}
                   </a>
-                </p>
-              </section>
-            {/if}
-
-            {#if import.meta.env.DEV}
-              <footer class="mt-8 pt-6 border-t border-gray-100">
-                <div
-                  class="flex items-center justify-center gap-2 text-xs font-medium text-green-600 bg-green-50 py-2 px-4 rounded-full inline-flex"
+                  <span class="mx-2 text-slate-300">•</span>
+                {/if}
+                {$_('attribution_provider_prefix')}
+                <a
+                  href="https://freedictionaryapi.com/"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="font-semibold text-slate-900 underline decoration-slate-300 underline-offset-4"
                 >
-                  <span class="relative flex h-2 w-2">
-                    <span
-                      class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"
-                    ></span>
-                    <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                  </span>
-                  <span>System Active • {new Date().toLocaleTimeString()}</span>
-                </div>
-              </footer>
-            {/if}
-          </div>
+                  FreeDictionaryAPI.com
+                </a>
+              </p>
+            </section>
+          {/if}
+
+          {#if import.meta.env.DEV}
+            <footer class="mt-8 pt-6 border-t border-gray-100">
+              <div
+                class="flex items-center justify-center gap-2 text-xs font-medium text-green-600 bg-green-50 py-2 px-4 rounded-full inline-flex"
+              >
+                <span class="relative flex h-2 w-2">
+                  <span
+                    class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"
+                  ></span>
+                  <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                </span>
+                <span>System Active • {new Date().toLocaleTimeString()}</span>
+              </div>
+            </footer>
+          {/if}
         </div>
       </section>
     </div>

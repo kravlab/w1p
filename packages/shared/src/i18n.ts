@@ -21,6 +21,7 @@ register('en', () =>
     extension_page: 'w1p Extension',
     open_menu: 'Open menu',
     close_menu: 'Close menu',
+    scroll_to_top: 'Back to top',
     menu_title: 'w1p',
     menu_dictionary: 'Dictionary',
     menu_shared_data: 'Shared data',
@@ -29,6 +30,7 @@ register('en', () =>
     menu_cache: 'Cache',
     menu_saved: 'Saved',
     menu_status: 'Status',
+    menu_development: 'Development',
     menu_ready: 'Ready',
     build_version_title: 'Version',
     build_sha_title: 'SHA',
@@ -70,6 +72,7 @@ register('en', () =>
     saved_export: 'Export JSON',
     saved_clear: 'Clear saved',
     saved_clear_confirm: 'Clear all saved senses?',
+    saved_open: 'Open',
     saved_remove: 'Remove',
     saved_remove_confirm: 'Remove this saved sense?',
     saved_search_placeholder: 'Search saved senses',
@@ -117,6 +120,7 @@ register('ru', () =>
     extension_page: 'w1p Extension',
     open_menu: 'Открыть меню',
     close_menu: 'Закрыть меню',
+    scroll_to_top: 'Наверх',
     menu_title: 'Разделы',
     menu_dictionary: 'Словарь',
     menu_shared_data: 'Общие данные',
@@ -125,6 +129,7 @@ register('ru', () =>
     menu_cache: 'Кэш',
     menu_saved: 'Сохранённое',
     menu_status: 'Статус',
+    menu_development: 'Разработка',
     menu_ready: 'Готово',
     build_version_title: 'Версия',
     build_sha_title: 'SHA',
@@ -166,6 +171,7 @@ register('ru', () =>
     saved_export: 'Экспорт JSON',
     saved_clear: 'Очистить сохранённое',
     saved_clear_confirm: 'Очистить все сохранённые значения?',
+    saved_open: 'Открыть',
     saved_remove: 'Удалить',
     saved_remove_confirm: 'Удалить это сохранённое значение?',
     saved_search_placeholder: 'Поиск по сохранённым значениям',
@@ -206,7 +212,11 @@ register('ru', () =>
   })
 );
 
-init({
-  fallbackLocale: 'en',
-  initialLocale: getInitialLocale()
-});
+export function setupI18n(): void {
+  init({
+    fallbackLocale: 'en',
+    initialLocale: getInitialLocale()
+  });
+}
+
+setupI18n();

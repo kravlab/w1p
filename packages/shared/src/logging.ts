@@ -137,20 +137,23 @@ export function filterDictionaryLogs(
   entries: DictionaryLogEntry[],
   options: {
     type?: 'all' | DictionaryLogType;
+    source?: 'all' | DictionaryLogSource;
     searchTerm?: string;
   } = {}
 ): DictionaryLogEntry[] {
   const normalizedSearch = options.searchTerm?.trim().toLowerCase() ?? '';
   const typeFilter = options.type ?? 'all';
+  const sourceFilter = options.source ?? 'all';
 
   return entries.filter((entry) => {
     const matchesType = typeFilter === 'all' || entry.type === typeFilter;
+    const matchesSource = sourceFilter === 'all' || entry.source === sourceFilter;
     const matchesSearch =
       !normalizedSearch ||
       entry.word.toLowerCase().includes(normalizedSearch) ||
       entry.message.toLowerCase().includes(normalizedSearch);
 
-    return matchesType && matchesSearch;
+    return matchesType && matchesSource && matchesSearch;
   });
 }
 

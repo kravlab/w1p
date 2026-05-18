@@ -4,12 +4,21 @@ import {
   DictionaryLookupError,
   buildSavedSenseId,
   clearSavedSenses,
+  getSearchHistory,
   getSavedSenses
 } from '@workspace/shared';
 import App from '../App.svelte';
 
 const createObjectURL = vi.fn(() => 'blob:saved-senses');
 const revokeObjectURL = vi.fn();
+const scrollToMock = vi.fn();
+
+function setWindowScrollY(value: number): void {
+  Object.defineProperty(window, 'scrollY', {
+    configurable: true,
+    value
+  });
+}
 
 const {
   fetchDefinition,
@@ -84,6 +93,8 @@ vi.mock('virtual:pwa-register/svelte', () => ({
 describe('PWA App', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setWindowScrollY(0);
+    window.scrollTo = scrollToMock;
     needRefreshStore.set(false);
     updateServiceWorker.mockResolvedValue(undefined);
     savedSensesStore.length = 0;
@@ -197,7 +208,95 @@ describe('PWA App', () => {
       translationLanguageCode: 'all'
     });
     expect(await screen.findByText('A test definition')).toBeInTheDocument();
+    expect(screen.getByTestId('search-chrome')).toHaveClass('sticky');
     expect(screen.getAllByText('Original Wiktionary page')).toHaveLength(1);
+    expect(getSearchHistory()[0]).toMatchObject({
+      query: 'test',
+      status: 'success'
+    });
+  });
+
+  it('hides the search chrome while scrolling down and shows it while scrolling up', async () => {
+    render(App);
+
+    const searchChrome = await screen.findByTestId('search-chrome');
+    expect(searchChrome).toHaveClass('translate-y-0', 'opacity-100');
+
+    setWindowScrollY(140);
+    window.dispatchEvent(new Event('scroll'));
+
+    await waitFor(() => {
+      expect(searchChrome).toHaveClass(
+        'pointer-events-none',
+        '-translate-y-[calc(100%+1rem)]',
+        'opacity-0'
+      );
+    });
+
+    setWindowScrollY(80);
+    window.dispatchEvent(new Event('scroll'));
+
+    await waitFor(() => {
+      expect(searchChrome).toHaveClass('translate-y-0', 'opacity-100');
+    });
+  });
+
+  it('shows a back-to-top button after scrolling and jumps to the page start', async () => {
+    render(App);
+
+    expect(screen.queryByRole('button', { name: 'Back to top' })).not.toBeInTheDocument();
+
+    setWindowScrollY(260);
+    window.dispatchEvent(new Event('scroll'));
+
+    const backToTopButton = await screen.findByRole('button', { name: 'Back to top' });
+    await fireEvent.click(backToTopButton);
+
+    expect(scrollToMock).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' });
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Back to top' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps search-result action buttons the same size', async () => {
+    render(App);
+
+    const input = await screen.findByPlaceholderText('Search for a word...');
+    await fireEvent.input(input, { target: { value: 'test' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await screen.findByText('A test definition');
+
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveClass('h-9', 'w-9');
+    expect(screen.getByRole('button', { name: 'More save options' })).toHaveClass('h-9', 'w-9');
+  });
+
+  it('asks for confirmation before deleting a custom translation', async () => {
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => false)
+    );
+    render(App);
+
+    const input = await screen.findByPlaceholderText('Search for a word...');
+    await fireEvent.input(input, { target: { value: 'test' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await screen.findByText('A test definition');
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Include translations' }));
+    await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'ru' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'More save options' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Save with custom translation' }));
+
+    const translationInput = screen.getByPlaceholderText('Your translation');
+    await fireEvent.input(translationInput, { target: { value: 'my translation' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save translation' }));
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    expect(confirm).toHaveBeenCalledWith('Remove this saved sense?');
+    expect(removeSavedSenseMock).not.toHaveBeenCalled();
+    expect(screen.getByText('my translation')).toBeInTheDocument();
   });
 
   it('restores the last search after a page reload', async () => {
@@ -280,6 +379,29 @@ describe('PWA App', () => {
     expect(await screen.findByText('A restored definition')).toBeInTheDocument();
     expect(screen.getByRole('combobox')).toHaveValue('ru');
     expect(fetchDefinition).not.toHaveBeenCalled();
+  });
+
+  it('prefills the search input from shared text query params', async () => {
+    localStorage.setItem(
+      'pwa-search-state',
+      JSON.stringify({
+        searchTerm: 'persisted',
+        includeTranslations: false,
+        translationLanguageCode: 'all',
+        rawSearchResult: { entries: [], source: 'cache' },
+        searchResult: { entries: [], source: 'cache' }
+      })
+    );
+    window.history.replaceState(
+      {},
+      '',
+      '/?title=Shared&text=shared%20word&url=https://example.com'
+    );
+
+    render(App);
+
+    expect(await screen.findByDisplayValue('shared word')).toBeInTheDocument();
+    expect(screen.queryByText('Received Shared Data')).not.toBeInTheDocument();
   });
 
   it('passes includeTranslations when the checkbox is enabled', async () => {
@@ -445,6 +567,30 @@ describe('PWA App', () => {
         translation: undefined
       })
     );
+    expect(await screen.findByRole('button', { name: 'Remove' })).toHaveClass(
+      'border-rose-200',
+      'bg-rose-50',
+      'text-rose-700'
+    );
+  });
+
+  it('updates the search result button to remove when a selected translation language has no match', async () => {
+    render(App);
+
+    await fireEvent.click(await screen.findByLabelText('Include translations'));
+    const languageSelect = screen.getByRole('combobox') as HTMLSelectElement;
+    await fireEvent.change(languageSelect, { target: { value: 'ru' } });
+    const input = await screen.findByPlaceholderText('Search for a word...');
+    await fireEvent.input(input, { target: { value: 'test' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByRole('button', { name: 'Remove' })).toHaveClass(
+      'border-rose-200',
+      'bg-rose-50',
+      'text-rose-700'
+    );
   });
 
   it('saves a definition with a user-provided translation from the save menu', async () => {
@@ -594,6 +740,26 @@ describe('PWA App', () => {
 
     expect(await screen.findByText('Saved senses')).toBeInTheDocument();
     expect(screen.getAllByText('A test definition')).toHaveLength(2);
+  });
+
+  it('opens a saved sense in the dictionary', async () => {
+    render(App);
+
+    const input = await screen.findByPlaceholderText('Search for a word...');
+    await fireEvent.input(input, { target: { value: 'test' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Saved' }));
+    const savedPanel = screen.getByText('Saved senses').closest('section');
+    await fireEvent.click(within(savedPanel as HTMLElement).getByRole('button', { name: 'Open' }));
+
+    expect(fetchDefinition).toHaveBeenLastCalledWith('test', {
+      includeTranslations: false,
+      translationLanguageCode: 'all'
+    });
+    expect(await screen.findByText('A test definition')).toBeInTheDocument();
   });
 
   it('removes a saved sense from the saved panel', async () => {
@@ -769,9 +935,42 @@ describe('PWA App', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Log' }));
 
     expect(await screen.findByText('Log history')).toBeInTheDocument();
-    const filter = screen.getByDisplayValue('all');
+    const filter = screen.getByRole('combobox', { name: 'Type' });
     await fireEvent.change(filter, { target: { value: 'success' } });
     expect(screen.getByText('Lookup succeeded for "test".')).toBeInTheDocument();
+  });
+
+  it('filters log entries by source', async () => {
+    getDictionaryLogs.mockReturnValue([
+      {
+        id: '1',
+        timestamp: '2026-05-09T10:00:00.000Z',
+        word: 'test',
+        type: 'success',
+        source: 'network',
+        message: 'Lookup succeeded for "test".'
+      },
+      {
+        id: '2',
+        timestamp: '2026-05-09T10:05:00.000Z',
+        word: 'runtime',
+        type: 'runtime_error',
+        source: 'unknown',
+        message: 'Runtime broke.'
+      }
+    ]);
+    render(App);
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Log' }));
+    await fireEvent.change(screen.getByRole('combobox', { name: 'Source' }), {
+      target: { value: 'unknown' }
+    });
+
+    expect(screen.getByText('Runtime broke.')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('Lookup succeeded for "test".')).not.toBeInTheDocument();
+    });
   });
 
   it('opens the cache panel and filters cache entries', async () => {
@@ -799,6 +998,16 @@ describe('PWA App', () => {
     expect(screen.getByText('SHA')).toBeInTheDocument();
     expect(screen.getByText(/-dev$/)).toBeInTheDocument();
     expect(screen.getByText(/^Built:/)).toBeInTheDocument();
+  });
+
+  it('groups developer tools in the side menu development section', async () => {
+    render(App);
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+
+    expect(screen.getByText('Development')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Log' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cache' })).toBeInTheDocument();
   });
 
   it('starts PWA installation from the side menu', async () => {
@@ -919,6 +1128,10 @@ describe('PWA App', () => {
         message: 'Word not found'
       })
     );
+    expect(getSearchHistory()[0]).toMatchObject({
+      query: 'missing',
+      status: 'not_found'
+    });
   });
 
   it('shows the generic fallback message for unexpected errors', async () => {
@@ -939,5 +1152,37 @@ describe('PWA App', () => {
         source: 'unknown'
       })
     );
+    expect(getSearchHistory()[0]).toMatchObject({
+      query: 'broken',
+      status: 'failed',
+      failureReason: 'unknown'
+    });
+  });
+
+  it('retries a failed search from the search input history', async () => {
+    fetchDefinition.mockRejectedValueOnce(new Error('offline'));
+    render(App);
+
+    const input = await screen.findByPlaceholderText('Search for a word...');
+    await fireEvent.input(input, { target: { value: 'retryme' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(
+      await screen.findByText('Something went wrong while searching. Please try again.')
+    ).toBeInTheDocument();
+
+    await fireEvent.focus(input);
+    await fireEvent.click(screen.getByRole('button', { name: /retryme/ }));
+
+    expect(fetchDefinition).toHaveBeenLastCalledWith('retryme', {
+      includeTranslations: false,
+      translationLanguageCode: 'all'
+    });
+    expect(await screen.findByText('A test definition')).toBeInTheDocument();
+    expect(getSearchHistory()[0]).toMatchObject({
+      query: 'retryme',
+      status: 'success',
+      attempts: 2
+    });
   });
 });

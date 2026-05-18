@@ -1,6 +1,6 @@
 {
   "name": "pwa-extension-monorepo",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,13 +10,16 @@
     "build:pwa": "pnpm -F pwa build",
     "build:ext": "pnpm -F extension build",
     "test": "pnpm -r --if-present test",
+    "test:coverage": "pnpm -r --if-present test:coverage",
     "lint": "eslint .",
     "format": "prettier --write .",
     "check": "pnpm -r check",
     "changelog": "git-cliff --tag ${npm_package_version:-unreleased} -o CHANGELOG.md",
+    "release": "node scripts/release-version.mjs",
     "version": "pnpm changelog && git add CHANGELOG.md"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.6",
     "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-svelte": "^3.17.1",

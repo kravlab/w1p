@@ -120,7 +120,8 @@ export function buildSavedSenseId(input: {
 /**
  * A saved sense stores normalized domain data, not the raw upstream payload,
  * so future UI changes can reuse the saved library without reparsing API
- * responses or depending on cache availability.
+ * responses or depending on cache availability. Re-saving the same identity
+ * replaces the stored entry so edits can update an existing sense in place.
  */
 export function normalizeSavedSense(input: SavedSenseInput): SavedSense {
   const translation = normalizeTranslation(input.translation);
@@ -195,11 +196,10 @@ export function saveSense(input: SavedSenseInput): SavedSense {
   const nextEntry = normalizeSavedSense(input);
   const previousEntries = readStoredSavedSenses();
 
-  if (previousEntries.some((entry) => entry.id === nextEntry.id)) {
-    return previousEntries.find((entry) => entry.id === nextEntry.id) ?? nextEntry;
-  }
-
-  writeStoredSavedSenses([nextEntry, ...previousEntries]);
+  writeStoredSavedSenses([
+    nextEntry,
+    ...previousEntries.filter((entry) => entry.id !== nextEntry.id)
+  ]);
   return nextEntry;
 }
 

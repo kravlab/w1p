@@ -6,3 +6,4 @@ dist
 dev-dist/
 .worktrees/
 /husky/_/
+coverage/

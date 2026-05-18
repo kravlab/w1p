@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.1] - 2026-05-14
+## [0.2.0] - 2026-05-17
 
 ### Bug Fixes
 
@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - _(pwa)_ Improve URL parsing and translation key uniqueness
 - _(pwa)_ Use relative paths for assets and scripts in index.html
 - _(pwa)_ Dismiss save menu on outside click
+- _(pwa)_ Add confirmation dialog before deleting custom translations
 
 ### Dependencies
 
@@ -57,6 +58,18 @@ All notable changes to this project will be documented in this file.
 - _(pwa)_ Replace 'custom' translation code with selected language code
 - _(pwa)_ Add edit and delete functionality for custom translations
 - _(pwa)_ Persist search state via localStorage
+- _(pwa)_ Implement dynamic styling for search result save buttons
+- _(pwa)_ Implement sticky search controls for improved usability
+- _(pwa)_ Add ability to reopen saved senses
+- _(shared)_ Implement search history tracking
+- _(pwa)_ Add log source filtering to dictionary logs
+- _(pwa)_ Implement dynamic visibility for search controls on scroll
+- _(pwa)_ Add back-to-top button functionality
+
+### Miscellaneous Tasks
+
+- _(docs)_ Update changelog and bump version to 0.1.1
+- Add release versioning script
 
 ### Refactor
 
@@ -71,22 +84,31 @@ All notable changes to this project will be documented in this file.
 - _(pwa)_ Simplify build SHA formatting logic
 - _(pwa)_ Improve installation UI and drawer behavior
 - _(pwa)_ Implement retrieval and display of user-saved custom translations
+- _(shared)_ Implement upsert logic for saved senses
+- _(pwa)_ Standardize search result action button dimensions
+- _(pwa)_ Reorganize side menu with development section
+- _(pwa)_ Simplify shared data handling and focus on search prefill
 
 ### Styling
 
 - _(ui)_ Remove responsive visibility classes from drawer components
+- _(ui)_ Update styling for delete button in saved senses
+- _(pwa)_ Refine sticky search container layout and spacing
 
 ### Testing
 
 - _(shared)_ Add vitest testing infrastructure and initial tests
 - _(pwa, extension)_ Implement vitest testing suite
 - _(pwa)_ Add integration tests for dictionary and cache workflows
+- _(shared)_ Expand test coverage for core utilities
+- Improve test coverage and enforce coverage thresholds
 
 ### Build
 
 - Setup development environment and tooling
 - _(pwa)_ Update manifest icons and screenshots
 - _(release)_ Update changelog script to include version tag
+- Setup vitest coverage and upgrade vitest dependencies
 
 ### Ci
 

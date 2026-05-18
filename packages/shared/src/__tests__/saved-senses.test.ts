@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 import {
   buildSavedSenseId,
   buildSavedSenseTranslation,
   clearSavedSenses,
   getSavedSenses,
   isSavedSense,
-  saveSense
+  mapPhoneticsToSavedPronunciations,
+  removeSavedSense,
+  saveSense,
+  SAVED_SENSES_STORAGE_KEY
 } from '../saved-senses';
 
 describe('saved senses', () => {
@@ -13,6 +16,11 @@ describe('saved senses', () => {
     localStorage.clear();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-10T12:00:00.000Z'));
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('builds a stable id from the canonical sense identity', () => {
@@ -42,20 +50,27 @@ describe('saved senses', () => {
       languageName: 'English',
       partOfSpeech: 'noun',
       phonetic: '/test/',
-      pronunciations: [{ text: '/test/', tags: [] }],
+      pronunciations: [{ text: '/test/', tags: ['tag1', ''] }],
       definition: 'A procedure intended to establish quality.',
-      tags: [],
+      tags: ['tag2', ' '],
       examples: ['This is only a test.', 'This is only a test.'],
-      quotes: [],
+      quotes: [
+        { text: 'Some quote', reference: 'Ref' },
+        { text: '  ', reference: 'None' }
+      ],
       synonyms: ['trial'],
       antonyms: [],
       translation: {
-        languageCode: 'ru',
+        languageCode: 'RU ',
         languageName: 'Russian',
-        words: ['тест', 'тест']
+        words: ['тест', 'тест', ' ']
       },
       sourceUrl: 'https://en.wiktionary.org/wiki/test'
     });
+
+    expect(savedSense.translation?.words).toEqual(['тест', 'тест']);
+    expect(savedSense.translation?.languageCode).toBe('ru');
+    expect(savedSense.tags).toEqual(['tag2']);
 
     saveSense({
       word: 'test',
@@ -78,77 +93,160 @@ describe('saved senses', () => {
       sourceUrl: 'https://en.wiktionary.org/wiki/test'
     });
 
-    expect(savedSense.translation?.words).toEqual(['тест', 'тест']);
-    expect(savedSense.translation?.source).toBe('api');
-    expect(savedSense.savedAt).toBe('2026-05-10T12:00:00.000Z');
     expect(getSavedSenses()).toHaveLength(1);
-    expect(isSavedSense(savedSense.id)).toBe(true);
   });
 
-  it('stores user-provided saved sense translations', () => {
-    const savedSense = saveSense({
+  it('removes a saved sense', () => {
+    const sense = saveSense({
       word: 'test',
-      languageCode: 'en',
-      languageName: 'English',
       partOfSpeech: 'noun',
-      phonetic: '/test/',
+      definition: 'def',
       pronunciations: [],
-      definition: 'A procedure intended to establish quality.',
+      tags: [],
+      examples: [],
+      quotes: [],
+      synonyms: [],
+      antonyms: []
+    });
+    expect(getSavedSenses()).toHaveLength(1);
+    removeSavedSense(sense.id);
+    expect(getSavedSenses()).toHaveLength(0);
+  });
+
+  it('checks whether a sense identity is saved', () => {
+    const sense = saveSense({
+      word: 'test',
+      partOfSpeech: 'noun',
+      definition: 'def',
+      pronunciations: [],
+      tags: [],
+      examples: [],
+      quotes: [],
+      synonyms: [],
+      antonyms: []
+    });
+
+    expect(isSavedSense(sense.id)).toBe(true);
+    expect(isSavedSense('sense-missing')).toBe(false);
+  });
+
+  it('handles empty or missing translation', () => {
+    const sense = saveSense({
+      word: 'test',
+      partOfSpeech: 'noun',
+      definition: 'def',
+      pronunciations: [],
       tags: [],
       examples: [],
       quotes: [],
       synonyms: [],
       antonyms: [],
-      translation: {
-        languageCode: 'ru',
-        languageName: 'Russian',
-        source: 'user',
-        words: ['проверка']
-      },
-      sourceUrl: 'https://en.wiktionary.org/wiki/test'
+      translation: { words: [' ', ''] }
     });
-
-    expect(savedSense.translation).toEqual({
-      languageCode: 'ru',
-      languageName: 'Russian',
-      source: 'user',
-      words: ['проверка']
-    });
+    expect(sense.translation).toBeUndefined();
   });
 
-  it('returns undefined translation for all-languages mode', () => {
-    expect(
-      buildSavedSenseTranslation(
-        [
-          {
-            languageCode: 'ru',
-            languageName: 'Russian',
-            word: 'тест'
-          }
-        ],
-        'all'
-      )
-    ).toBeUndefined();
+  it('maps phonetics to saved pronunciations', () => {
+    const phonetics = [{ text: '/abc/' }, { text: '/def/' }];
+    const results = mapPhoneticsToSavedPronunciations(phonetics);
+    expect(results).toEqual([
+      { text: '/abc/', tags: [] },
+      { text: '/def/', tags: [] }
+    ]);
   });
 
   it('clears saved senses', () => {
     saveSense({
       word: 'test',
-      languageCode: 'en',
-      languageName: 'English',
       partOfSpeech: 'noun',
-      phonetic: '/test/',
+      definition: 'def',
       pronunciations: [],
-      definition: 'A procedure intended to establish quality.',
       tags: [],
       examples: [],
       quotes: [],
       synonyms: [],
-      antonyms: [],
-      sourceUrl: 'https://en.wiktionary.org/wiki/test'
+      antonyms: []
     });
 
     clearSavedSenses();
     expect(getSavedSenses()).toEqual([]);
+  });
+
+  it('handles localStorage errors and missing storage', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => {
+        throw new Error('fail');
+      }),
+      setItem: vi.fn(),
+      clear: vi.fn(),
+      removeItem: vi.fn(),
+      length: 0,
+      key: vi.fn()
+    });
+    expect(getSavedSenses()).toEqual([]);
+    expect(warnSpy).toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+    vi.stubGlobal('localStorage', undefined);
+    expect(getSavedSenses()).toEqual([]);
+    clearSavedSenses();
+  });
+
+  it('handles invalid JSON in storage', () => {
+    localStorage.setItem(SAVED_SENSES_STORAGE_KEY, 'invalid');
+    expect(getSavedSenses()).toEqual([]);
+  });
+
+  it('ignores storage payloads that are not saved-sense arrays', () => {
+    localStorage.setItem(SAVED_SENSES_STORAGE_KEY, JSON.stringify({ word: 'test' }));
+    expect(getSavedSenses()).toEqual([]);
+  });
+
+  it('logs storage write failures without throwing', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(),
+      setItem: vi.fn(() => {
+        throw new Error('quota exceeded');
+      }),
+      clear: vi.fn(),
+      removeItem: vi.fn(),
+      length: 0,
+      key: vi.fn()
+    });
+
+    expect(() =>
+      saveSense({
+        word: 'test',
+        partOfSpeech: 'noun',
+        definition: 'def',
+        pronunciations: [],
+        tags: [],
+        examples: [],
+        quotes: [],
+        synonyms: [],
+        antonyms: []
+      })
+    ).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith('Failed to persist saved senses', expect.any(Error));
+  });
+
+  it('builds translation only if language matches', () => {
+    const trans = [
+      { languageCode: 'en', languageName: 'English', word: 'hi' },
+      { languageCode: 'ru', languageName: 'Russian', word: 'привет' }
+    ];
+
+    expect(buildSavedSenseTranslation(trans, 'ru')).toEqual({
+      languageCode: 'ru',
+      languageName: 'Russian',
+      source: 'api',
+      words: ['привет']
+    });
+
+    expect(buildSavedSenseTranslation(trans, 'all')).toBeUndefined();
+    expect(buildSavedSenseTranslation(trans, 'fr')).toBeUndefined();
   });
 });

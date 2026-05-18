@@ -94,6 +94,26 @@ Format:
 pnpm format
 ```
 
+## Release
+
+Use the release script to keep package versions and the changelog in sync:
+
+```bash
+pnpm release -- pwa shared patch
+```
+
+Preview the target resolution without writing package files or regenerating the
+changelog:
+
+```bash
+pnpm release -- --dry-run pwa shared patch
+```
+
+The last argument is the release type: `patch`, `minor`, `major`, or an exact
+`x.y.z` version. When any non-root package is targeted, the root package is
+bumped once as the changelog version source. Use `all` only when every package,
+including the extension, should receive the same version.
+
 ## PWA Notes
 
 - The PWA manifest is configured through `vite-plugin-pwa`

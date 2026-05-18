@@ -11,7 +11,8 @@ export default tseslint.config(
       '**/.svelte-kit/**',
       '**/node_modules/**',
       '**/public/**',
-      '**/.history/**'
+      '**/.history/**',
+      '**/coverage/**'
     ]
   },
   tseslint.configs.recommended,
