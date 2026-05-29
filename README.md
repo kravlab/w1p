@@ -102,6 +102,13 @@ Use the release script to keep package versions and the changelog in sync:
 pnpm release -- pwa shared patch
 ```
 
+With no targets, the script uses `auto` mode and releases only packages affected
+by changed paths:
+
+```bash
+pnpm release
+```
+
 Preview the target resolution without writing package files or regenerating the
 changelog:
 
@@ -109,10 +116,12 @@ changelog:
 pnpm release -- --dry-run pwa shared patch
 ```
 
-The last argument is the release type: `patch`, `minor`, `major`, or an exact
-`x.y.z` version. When any non-root package is targeted, the root package is
-bumped once as the changelog version source. Use `all` only when every package,
-including the extension, should receive the same version.
+The last argument is the release type: `auto`, `patch`, `minor`, `major`, or an
+exact `x.y.z` version. If it is omitted, `auto` infers each target's bump from
+conventional commits and changed paths since the latest `v*` tag. Shared package
+changes affect `shared`, `pwa`, and `extension`. Each targeted package is bumped
+from its own current version; `root` is always included as the changelog version
+source without forcing other packages to use the root version.
 
 ## PWA Notes
 

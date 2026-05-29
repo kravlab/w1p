@@ -7,3 +7,6 @@ dev-dist/
 .worktrees/
 /husky/_/
 coverage/
+.envrc
+/.scannerwork/
+sonar-project.properties
