@@ -12,12 +12,36 @@ import App from '../App.svelte';
 const createObjectURL = vi.fn(() => 'blob:saved-senses');
 const revokeObjectURL = vi.fn();
 const scrollToMock = vi.fn();
+const serviceWorkerUpdateMock = vi.fn();
 
 function setWindowScrollY(value: number): void {
   Object.defineProperty(window, 'scrollY', {
     configurable: true,
     value
   });
+}
+
+function setWindowSelectionText(
+  value: string,
+  rect: Partial<DOMRect> = { bottom: 120, height: 18, left: 40, width: 90 }
+): void {
+  vi.spyOn(window, 'getSelection').mockReturnValue({
+    rangeCount: 1,
+    getRangeAt: vi.fn(() => ({
+      getBoundingClientRect: () => ({
+        bottom: rect.bottom ?? 120,
+        height: rect.height ?? 18,
+        left: rect.left ?? 40,
+        right: rect.right ?? 130,
+        top: rect.top ?? 102,
+        width: rect.width ?? 90,
+        x: rect.x ?? rect.left ?? 40,
+        y: rect.y ?? rect.top ?? 102,
+        toJSON: () => ({})
+      })
+    })),
+    toString: () => value
+  } as unknown as Selection);
 }
 
 const {
@@ -95,6 +119,7 @@ describe('PWA App', () => {
     vi.clearAllMocks();
     setWindowScrollY(0);
     window.scrollTo = scrollToMock;
+    document.body.style.overflow = '';
     needRefreshStore.set(false);
     updateServiceWorker.mockResolvedValue(undefined);
     savedSensesStore.length = 0;
@@ -171,6 +196,12 @@ describe('PWA App', () => {
     URL.revokeObjectURL = revokeObjectURL;
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     vi.stubGlobal('navigator', {
+      serviceWorker: {
+        getRegistration: vi.fn().mockResolvedValue({
+          update: serviceWorkerUpdateMock,
+          waiting: null
+        })
+      },
       storage: {
         persisted: vi.fn().mockResolvedValue(false),
         persist: vi.fn().mockResolvedValue(true)
@@ -213,6 +244,131 @@ describe('PWA App', () => {
     expect(getSearchHistory()[0]).toMatchObject({
       query: 'test',
       status: 'success'
+    });
+  });
+
+  it('renders a repeated search word heading only once for multiple meanings', async () => {
+    fetchDefinition.mockResolvedValueOnce({
+      entries: [
+        {
+          word: 'test',
+          phonetic: '/test/',
+          phonetics: [],
+          meanings: [
+            {
+              partOfSpeech: 'noun',
+              definitions: [
+                {
+                  definition: 'A noun definition',
+                  synonyms: [],
+                  antonyms: [],
+                  translations: []
+                }
+              ],
+              synonyms: [],
+              antonyms: []
+            }
+          ]
+        },
+        {
+          word: 'test',
+          phonetic: '/test/',
+          phonetics: [],
+          meanings: [
+            {
+              partOfSpeech: 'verb',
+              definitions: [
+                {
+                  definition: 'A verb definition',
+                  synonyms: [],
+                  antonyms: [],
+                  translations: []
+                }
+              ],
+              synonyms: [],
+              antonyms: []
+            }
+          ]
+        }
+      ],
+      source: 'network'
+    });
+
+    render(App);
+
+    const input = await screen.findByPlaceholderText('Search for a word...');
+    await fireEvent.input(input, { target: { value: 'test' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(await screen.findByText('A noun definition')).toBeInTheDocument();
+    expect(screen.getByText('A verb definition')).toBeInTheDocument();
+    expect(
+      screen
+        .getAllByRole('heading', { level: 2 })
+        .filter((heading) => heading.textContent?.trim().startsWith('test'))
+    ).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'noun /test/', level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'verb /test/', level: 3 })).toBeInTheDocument();
+    expect(screen.getAllByText('/test/')[0]).toHaveClass('text-xs', 'text-gray-400');
+  });
+
+  it('clears the current dictionary search from the search toolbar', async () => {
+    render(App);
+
+    const input = await screen.findByPlaceholderText('Search for a word...');
+    await fireEvent.input(input, { target: { value: 'test' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText('A test definition')).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+
+    expect(input).toHaveValue('');
+    expect(screen.queryByText('A test definition')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear search' })).toBeDisabled();
+    expect(localStorage.getItem('pwa-search-state')).toBeNull();
+  });
+
+  it('keeps search toolbar controls aligned to the same height', async () => {
+    render(App);
+
+    expect(await screen.findByRole('button', { name: 'Open menu' })).toHaveClass('h-11', 'w-11');
+    expect(screen.getByPlaceholderText('Search for a word...')).toHaveClass('h-11');
+    expect(screen.getByRole('button', { name: 'Clear search' })).toHaveClass('h-11', 'w-11');
+    expect(screen.getByRole('button', { name: 'Search' })).toHaveClass('h-11');
+  });
+
+  it('keeps the mobile shell constrained to the viewport width', async () => {
+    render(App);
+
+    const main = await screen.findByRole('main');
+    const searchChrome = await screen.findByTestId('search-chrome');
+
+    expect(main).toHaveClass('min-h-dvh', 'w-full', 'overflow-x-hidden');
+    expect(searchChrome.closest('section')).toHaveClass('min-w-0');
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Log' }));
+
+    const logPanel = screen.getByText('Log history').closest('section') as HTMLElement;
+    const logHeader = screen.getByText('Log history').closest('header') as HTMLElement;
+
+    expect(logPanel).toHaveClass('w-full', 'min-w-0');
+    expect(logHeader).toHaveClass('flex-col', 'sm:flex-row');
+  });
+
+  it('locks page scrolling while the side menu is open', async () => {
+    render(App);
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+
+    const sideMenu = screen.getByRole('complementary');
+    expect(document.body.style.overflow).toBe('hidden');
+    expect(sideMenu).toHaveClass('overflow-y-auto', 'overscroll-contain');
+
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Close menu' })[0]);
+
+    await waitFor(() => {
+      expect(document.body.style.overflow).toBe('');
     });
   });
 
@@ -269,6 +425,25 @@ describe('PWA App', () => {
 
     expect(screen.getByRole('button', { name: 'Save' })).toHaveClass('h-9', 'w-9');
     expect(screen.getByRole('button', { name: 'More save options' })).toHaveClass('h-9', 'w-9');
+  });
+
+  it('shows selection actions and searches selected page text', async () => {
+    setWindowSelectionText('  selected   word  ');
+    render(App);
+
+    document.dispatchEvent(new Event('selectionchange'));
+
+    const selectionButton = await screen.findByRole('button', { name: 'Search selected text' });
+    expect(selectionButton).toHaveTextContent('Search');
+    expect(selectionButton).toHaveStyle({ top: '130px', left: '85px' });
+    await fireEvent.click(selectionButton);
+
+    expect(fetchDefinition).toHaveBeenCalledWith('selected word', {
+      includeTranslations: false,
+      translationLanguageCode: 'all'
+    });
+    expect(await screen.findByDisplayValue('selected word')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Search selected text' })).not.toBeInTheDocument();
   });
 
   it('asks for confirmation before deleting a custom translation', async () => {
@@ -401,7 +576,47 @@ describe('PWA App', () => {
     render(App);
 
     expect(await screen.findByDisplayValue('shared word')).toBeInTheDocument();
+    expect(window.location.search).toBe('');
     expect(screen.queryByText('Received Shared Data')).not.toBeInTheDocument();
+  });
+
+  it('preserves unrelated query params after consuming shared text', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?keep=1&title=Shared&text=shared%20word&url=https://example.com#dictionary'
+    );
+
+    render(App);
+
+    expect(await screen.findByDisplayValue('shared word')).toBeInTheDocument();
+    expect(window.location.search).toBe('?keep=1');
+    expect(window.location.hash).toBe('#dictionary');
+  });
+
+  it('removes a duplicated shared URL from the search prefill', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?text=tree%20https%3A%2F%2Fexample.com%2Ftree&url=https%3A%2F%2Fexample.com%2Ftree'
+    );
+
+    render(App);
+
+    expect(await screen.findByDisplayValue('tree')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue(/https:\/\/example.com\/tree/)).not.toBeInTheDocument();
+  });
+
+  it('keeps shared text phrases while removing the duplicated shared URL', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?text=big%20green%20tree%20https%3A%2F%2Fexample.com%2Ftree&url=https%3A%2F%2Fexample.com%2Ftree'
+    );
+
+    render(App);
+
+    expect(await screen.findByDisplayValue('big green tree')).toBeInTheDocument();
   });
 
   it('passes includeTranslations when the checkbox is enabled', async () => {
@@ -1000,6 +1215,34 @@ describe('PWA App', () => {
     expect(screen.getByText(/^Built:/)).toBeInTheDocument();
   });
 
+  it('checks for PWA updates from the side menu status panel', async () => {
+    serviceWorkerUpdateMock.mockResolvedValueOnce(undefined);
+    render(App);
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
+
+    expect(serviceWorkerUpdateMock).toHaveBeenCalledOnce();
+    expect(
+      await screen.findByText('You are using the latest available version.')
+    ).toBeInTheDocument();
+  });
+
+  it('shows when the app update channel is not active yet', async () => {
+    vi.stubGlobal('navigator', {
+      storage: {
+        persisted: vi.fn().mockResolvedValue(false),
+        persist: vi.fn().mockResolvedValue(true)
+      }
+    });
+    render(App);
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
+
+    expect(await screen.findByText('App update channel is not active yet.')).toBeInTheDocument();
+  });
+
   it('groups developer tools in the side menu development section', async () => {
     render(App);
 
@@ -1037,6 +1280,20 @@ describe('PWA App', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Update now' }));
 
     expect(updateServiceWorker).toHaveBeenCalledWith(true);
+  });
+
+  it('dismisses the PWA update prompt without activating the update', async () => {
+    needRefreshStore.set(true);
+
+    render(App);
+
+    expect(await screen.findByText('A new version is ready.')).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('A new version is ready.')).not.toBeInTheDocument();
+    });
+    expect(updateServiceWorker).not.toHaveBeenCalled();
   });
 
   it('parses cache entry words without query parameters', async () => {

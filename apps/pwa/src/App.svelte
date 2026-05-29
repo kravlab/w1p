@@ -97,6 +97,11 @@
   let isPersistentStorageSupported = $state(false);
   let isPersistentStorageEnabled = $state(false);
   let isRequestingPersistentStorage = $state(false);
+  let isUpdateBannerDismissed = $state(false);
+  let isCheckingForUpdates = $state(false);
+  let updateCheckMessageKey = $state('');
+  let selectedPageText = $state('');
+  let selectionActionPosition = $state({ top: 0, left: 0 });
 
   const logTypeOptions: Array<'all' | DictionaryLogType> = [
     'all',
@@ -141,6 +146,14 @@
         searchResult
       } satisfies StoredSearchState)
     );
+  }
+
+  function clearPersistedSearchState(): void {
+    if (!canUseLocalStorage()) {
+      return;
+    }
+
+    localStorage.removeItem(SEARCH_STATE_STORAGE_KEY);
   }
 
   function restoreSearchState(): void {
@@ -321,6 +334,51 @@
     await performSearch();
   }
 
+  function clearCurrentSearch(): void {
+    searchTerm = '';
+    dictionaryError = '';
+    rawSearchResult = { entries: [], source: 'network' };
+    searchResult = { entries: [], source: 'network' };
+    isSearchHistoryOpen = false;
+    clearPersistedSearchState();
+  }
+
+  function normalizePageSelection(selection: Selection | null): string {
+    return (selection?.toString() ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  function getSelectionActionPosition(selection: Selection | null): { top: number; left: number } {
+    if (!selection?.rangeCount) {
+      return { top: window.innerHeight - 88, left: window.innerWidth / 2 };
+    }
+
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    if (!rect.width && !rect.height) {
+      return { top: window.innerHeight - 88, left: window.innerWidth / 2 };
+    }
+
+    return {
+      top: Math.min(rect.bottom + 10, window.innerHeight - 56),
+      left: Math.min(Math.max(rect.left + rect.width / 2, 56), window.innerWidth - 56)
+    };
+  }
+
+  function closeSelectionActions(): void {
+    selectedPageText = '';
+  }
+
+  async function searchSelectedPageText(): Promise<void> {
+    const selectedText = selectedPageText.trim();
+    if (!selectedText) {
+      return;
+    }
+
+    searchTerm = selectedText;
+    closeSelectionActions();
+    isSearchHistoryOpen = false;
+    await performSearch();
+  }
+
   function handleTranslationLanguageChange(event: Event): void {
     translationLanguageCode = (event.currentTarget as HTMLSelectElement).value;
     if (includeTranslations && rawSearchResult.entries.length) {
@@ -418,6 +476,23 @@
   function closeDrawer(): void {
     isDrawerOpen = false;
   }
+
+  /**
+   * The drawer owns wheel/touch scrolling while it is open. Locking the page
+   * prevents scroll chaining from moving the dictionary results behind it.
+   */
+  $effect(() => {
+    if (typeof document === 'undefined' || !isDrawerOpen) {
+      return;
+    }
+
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+    };
+  });
 
   function openLog(): void {
     isLogOpen = true;
@@ -956,6 +1031,51 @@
     isScrollTopButtonVisible = false;
   }
 
+  /**
+   * Chrome share sheets may append the shared URL to the text payload while
+   * also sending it as `url`. Search should use the human-selected text only.
+   */
+  function normalizeSharedSearchText(sharedText: string, sharedUrl: string): string {
+    const trimmedText = sharedText.trim();
+    const trimmedUrl = sharedUrl.trim();
+
+    if (!trimmedUrl) {
+      return trimmedText;
+    }
+
+    return trimmedText
+      .split(/\s+/)
+      .filter((part) => part !== trimmedUrl)
+      .join(' ')
+      .trim();
+  }
+
+  /**
+   * Share-target query params are a delivery mechanism, not app state. Remove
+   * them after importing the text so browser refreshes do not keep re-inserting
+   * stale shared payloads into the search field.
+   */
+  function consumeSharedSearchParams(): string {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('text')) {
+      return '';
+    }
+
+    const sharedText = normalizeSharedSearchText(params.get('text') || '', params.get('url') || '');
+    params.delete('title');
+    params.delete('text');
+    params.delete('url');
+
+    const nextSearch = params.toString();
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
+    );
+
+    return sharedText;
+  }
+
   const { needRefresh, updateServiceWorker } = useRegisterSW({
     onRegistered(r: ServiceWorkerRegistration | undefined) {
       if (r) console.info('PWA Service Worker registered');
@@ -968,6 +1088,45 @@
    */
   function updatePwa(): void {
     void updateServiceWorker(true);
+  }
+
+  /**
+   * Dismissing only hides the current in-page prompt. The service worker update
+   * remains waiting, so a reload or future prompt can still activate it.
+   */
+  function dismissUpdateBanner(): void {
+    isUpdateBannerDismissed = true;
+  }
+
+  /**
+   * Manual update checks ask the active service worker registration to revalidate
+   * its script. The PWA plugin flips `needRefresh` when a waiting worker appears,
+   * so this function only owns the user-triggered status message.
+   */
+  async function checkForUpdates(): Promise<void> {
+    if (!('serviceWorker' in navigator) || !navigator.serviceWorker.getRegistration) {
+      updateCheckMessageKey = 'update_unavailable';
+      return;
+    }
+
+    isCheckingForUpdates = true;
+    updateCheckMessageKey = 'update_checking';
+
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (!registration) {
+        updateCheckMessageKey = 'update_unavailable';
+        return;
+      }
+
+      await registration.update();
+      updateCheckMessageKey = registration.waiting ? 'update_available' : 'update_current';
+    } catch (error) {
+      console.warn('Manual PWA update check failed', error);
+      updateCheckMessageKey = 'update_failed';
+    } finally {
+      isCheckingForUpdates = false;
+    }
   }
 
   /**
@@ -985,13 +1144,9 @@
       await refreshCacheEntries();
       await refreshPersistentStorageStatus();
 
-      const params = new URLSearchParams(window.location.search);
-      if (params.has('text')) {
-        const sharedText = params.get('text') || '';
-
-        if (sharedText) {
-          searchTerm = sharedText;
-        }
+      const sharedText = consumeSharedSearchParams();
+      if (sharedText) {
+        searchTerm = sharedText;
       }
     })();
 
@@ -1032,11 +1187,21 @@
       });
     };
 
+    const handleSelectionChange = (): void => {
+      const selection = window.getSelection();
+      const selectionText = normalizePageSelection(selection);
+      selectedPageText = selectionText;
+      if (selectionText) {
+        selectionActionPosition = getSelectionActionPosition(selection);
+      }
+    };
+
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     window.addEventListener('appinstalled', handleAppInstalled);
     window.addEventListener('error', handleWindowError);
     window.addEventListener('unhandledrejection', handleUnhandledRejection);
     window.addEventListener('scroll', handleWindowScroll, { passive: true });
+    document.addEventListener('selectionchange', handleSelectionChange);
     document.addEventListener('pointerdown', handleDocumentPointerDown, true);
 
     return () => {
@@ -1045,6 +1210,7 @@
       window.removeEventListener('error', handleWindowError);
       window.removeEventListener('unhandledrejection', handleUnhandledRejection);
       window.removeEventListener('scroll', handleWindowScroll);
+      document.removeEventListener('selectionchange', handleSelectionChange);
       document.removeEventListener('pointerdown', handleDocumentPointerDown, true);
     };
   });
@@ -1061,9 +1227,9 @@
   }
 </script>
 
-<main class="min-h-screen bg-slate-100 font-sans">
+<main class="min-h-dvh w-full overflow-x-hidden bg-slate-100 font-sans">
   {#if $isLoading}
-    <div class="flex min-h-screen items-center justify-center p-4">
+    <div class="flex min-h-dvh w-full items-center justify-center p-4">
       <div class="flex items-center justify-center space-x-2 animate-pulse" aria-hidden="true">
         <div class="w-2 h-2 bg-blue-600 rounded-full"></div>
         <div class="w-2 h-2 bg-blue-600 rounded-full"></div>
@@ -1091,6 +1257,18 @@
       </button>
     {/if}
 
+    {#if selectedPageText}
+      <button
+        type="button"
+        class="fixed z-30 -translate-x-1/2 rounded-full bg-slate-950 px-4 py-2 text-xs font-black text-white shadow-2xl ring-1 ring-white/40 transition active:scale-95"
+        style={`top: ${selectionActionPosition.top}px; left: ${selectionActionPosition.left}px;`}
+        aria-label={$_('selection_search_button')}
+        onclick={() => void searchSelectedPageText()}
+      >
+        Search
+      </button>
+    {/if}
+
     {#if isLogOpen}
       <button
         type="button"
@@ -1099,16 +1277,18 @@
         onclick={closeLog}
       ></button>
       <section
-        class="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l border-slate-200 bg-white shadow-2xl"
+        class="fixed inset-y-0 right-0 z-50 flex w-full min-w-0 max-w-xl flex-col border-l border-slate-200 bg-white shadow-2xl"
       >
-        <header class="flex items-center justify-between border-b border-slate-200 px-6 py-4">
-          <div>
+        <header
+          class="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6"
+        >
+          <div class="min-w-0">
             <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
               {$_('menu_log')}
             </p>
             <h2 class="mt-1 text-xl font-black text-slate-900">{$_('log_title')}</h2>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <button
               type="button"
               class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
@@ -1133,7 +1313,7 @@
           </div>
         </header>
 
-        <div class="flex-1 overflow-y-auto px-6 py-5">
+        <div class="min-w-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
           <div class="mb-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px_160px]">
             <input
               type="text"
@@ -1254,16 +1434,18 @@
         onclick={closeCache}
       ></button>
       <section
-        class="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l border-slate-200 bg-white shadow-2xl"
+        class="fixed inset-y-0 right-0 z-50 flex w-full min-w-0 max-w-xl flex-col border-l border-slate-200 bg-white shadow-2xl"
       >
-        <header class="flex items-center justify-between border-b border-slate-200 px-6 py-4">
-          <div>
+        <header
+          class="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6"
+        >
+          <div class="min-w-0">
             <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
               {$_('menu_cache')}
             </p>
             <h2 class="mt-1 text-xl font-black text-slate-900">{$_('cache_title')}</h2>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <button
               type="button"
               class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
@@ -1281,7 +1463,7 @@
           </div>
         </header>
 
-        <div class="flex-1 overflow-y-auto px-6 py-5">
+        <div class="min-w-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
           <div class="mb-5">
             <input
               type="text"
@@ -1369,16 +1551,18 @@
         onclick={closeSaved}
       ></button>
       <section
-        class="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l border-slate-200 bg-white shadow-2xl"
+        class="fixed inset-y-0 right-0 z-50 flex w-full min-w-0 max-w-xl flex-col border-l border-slate-200 bg-white shadow-2xl"
       >
-        <header class="flex items-center justify-between border-b border-slate-200 px-6 py-4">
-          <div>
+        <header
+          class="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6"
+        >
+          <div class="min-w-0">
             <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
               {$_('menu_saved')}
             </p>
             <h2 class="mt-1 text-xl font-black text-slate-900">{$_('saved_title')}</h2>
           </div>
-          <div class="flex flex-wrap items-center justify-end gap-2">
+          <div class="flex flex-wrap items-center gap-2 sm:justify-end">
             <button
               type="button"
               class="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1405,7 +1589,7 @@
           </div>
         </header>
 
-        <div class="flex-1 overflow-y-auto px-6 py-5">
+        <div class="min-w-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
           <div class="mb-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
             <input
               type="text"
@@ -1513,9 +1697,9 @@
       </section>
     {/if}
 
-    <div class="flex min-h-screen">
+    <div class="flex min-h-dvh w-full min-w-0 overflow-x-hidden">
       <aside
-        class={`fixed inset-y-0 left-0 z-40 w-72 border-r border-slate-200 bg-white/95 shadow-2xl backdrop-blur transition-transform duration-200 ${
+        class={`fixed inset-y-0 left-0 z-40 w-72 overflow-y-auto overscroll-contain border-r border-slate-200 bg-white/95 shadow-2xl backdrop-blur transition-transform duration-200 ${
           isDrawerOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
@@ -1628,13 +1812,28 @@
               </p>
               <p class="mt-2 font-mono text-sm font-semibold text-slate-900">{buildSha}</p>
               <p class="mt-3 text-xs text-slate-500">{$_('build_time_label')}: {buildTime}</p>
+              <button
+                type="button"
+                class="mt-4 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isCheckingForUpdates}
+                onclick={checkForUpdates}
+              >
+                {isCheckingForUpdates ? $_('update_checking') : $_('update_check_button')}
+              </button>
+              {#if updateCheckMessageKey}
+                <p class="mt-3 text-xs font-medium text-slate-500">
+                  {$_(updateCheckMessageKey)}
+                </p>
+              {/if}
             </div>
           </div>
         </div>
       </aside>
 
-      <section class="flex min-h-screen flex-1 items-start justify-center p-4 lg:p-8">
-        <div class="w-full max-w-4xl">
+      <section
+        class="flex min-h-dvh min-w-0 flex-1 items-start justify-center px-3 py-3 sm:p-4 lg:p-8"
+      >
+        <div class="w-full min-w-0 max-w-4xl">
           <!-- Keep the menu button and search controls near the viewport, but
                hide them while scrolling down so long result lists keep focus. -->
           <div
@@ -1642,7 +1841,7 @@
             data-testid="search-chrome"
           >
             <section class="text-center" id="dictionary">
-              <div class="flex gap-2">
+              <div class="flex min-w-0 gap-2">
                 <button
                   type="button"
                   class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
@@ -1659,7 +1858,7 @@
                     oninput={() => (isSearchHistoryOpen = true)}
                     onkeydown={handleKeydown}
                     placeholder={$_('search_placeholder')}
-                    class="w-full rounded-xl border-2 border-gray-200 bg-white p-3 outline-none transition-all focus:border-blue-500"
+                    class="h-11 w-full rounded-xl border-2 border-gray-200 bg-white px-3 outline-none transition-all focus:border-blue-500"
                   />
                   {#if isSearchHistoryOpen && getVisibleSearchHistory().length}
                     <div
@@ -1691,12 +1890,21 @@
                   {/if}
                 </div>
                 <button
+                  type="button"
+                  class="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-xl font-black leading-none text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={$_('clear_search')}
+                  disabled={!searchTerm && !searchResult.entries.length && !dictionaryError}
+                  onclick={clearCurrentSearch}
+                >
+                  ×
+                </button>
+                <button
                   onclick={() => {
                     isSearchHistoryOpen = false;
                     void performSearch();
                   }}
                   disabled={isSearching}
-                  class="rounded-xl bg-blue-600 px-6 font-bold text-white transition-all hover:bg-blue-700 active:scale-95 disabled:opacity-50"
+                  class="inline-flex h-11 shrink-0 items-center justify-center rounded-xl bg-blue-600 px-4 font-bold text-white transition-all hover:bg-blue-700 active:scale-95 disabled:opacity-50 sm:px-6"
                 >
                   {isSearching ? $_('searching') : $_('search_button')}
                 </button>
@@ -1714,7 +1922,7 @@
                   value={translationLanguageCode}
                   disabled={!includeTranslations}
                   onchange={handleTranslationLanguageChange}
-                  class="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                  class="max-w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
                 >
                   {#each DICTIONARY_TRANSLATION_LANGUAGES as language (language.code)}
                     <option value={language.code}>{language.label}</option>
@@ -1727,10 +1935,18 @@
             </section>
           </div>
 
-          {#if $needRefresh}
+          {#if $needRefresh && !isUpdateBannerDismissed}
             <section
-              class="mb-8 rounded-2xl border-2 border-amber-100 bg-amber-50 p-5 transition-all"
+              class="relative mb-8 rounded-2xl border-2 border-amber-100 bg-amber-50 p-5 pr-14 transition-all"
             >
+              <button
+                type="button"
+                class="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-full text-lg font-black leading-none text-amber-900 transition hover:bg-amber-100"
+                aria-label="Close"
+                onclick={dismissUpdateBanner}
+              >
+                ×
+              </button>
               <p class="mb-2 font-bold text-amber-900">{$_('pwa_update_ready')}</p>
               <p class="mb-4 text-sm text-amber-800">{$_('pwa_update_description')}</p>
               <button
@@ -1756,16 +1972,19 @@
 
           {#each searchResult.entries as entry, index (`${entry.word}-${entry.phonetic || 'no-phonetic'}-${index}`)}
             <!-- The upstream API can return multiple entries with identical word and phonetic. -->
-            <div class="text-left mt-8 mb-4">
-              <h2 class="text-2xl font-black text-gray-900 flex items-baseline gap-2">
-                {entry.word}
-                {#if entry.phonetic}
-                  <span class="text-sm font-medium text-gray-400">{entry.phonetic}</span>
-                {/if}
-              </h2>
-            </div>
+            {@const shouldShowEntryWord =
+              index === 0 || searchResult.entries[index - 1].word !== entry.word}
+            {#if shouldShowEntryWord}
+              <div class="text-left mt-8 mb-4">
+                <h2
+                  class="flex min-w-0 items-baseline gap-2 break-words text-2xl font-black text-gray-900"
+                >
+                  {entry.word}
+                </h2>
+              </div>
+            {/if}
             {#each entry.meanings as meaning (meaning.partOfSpeech)}
-              <SharedComponent title={meaning.partOfSpeech}>
+              <SharedComponent title={meaning.partOfSpeech} subtitle={entry.phonetic}>
                 <ul class="list-disc list-outside ml-4 space-y-3">
                   {#each meaning.definitions as def (def.definition)}
                     {@const customSaveKey = getCustomSavedSenseId(entry, meaning.partOfSpeech, def)}

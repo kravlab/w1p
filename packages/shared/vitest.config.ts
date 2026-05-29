@@ -15,7 +15,7 @@ export default defineConfig({
     include: ['src/**/*.{test,spec}.{js,ts,svelte}'],
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'json', 'html'],
+      reporter: ['text', 'json', 'html', 'lcov'],
       // Keep coverage enforcement aligned with the repository testing policy in AGENTS.md.
       thresholds: {
         lines: 90,

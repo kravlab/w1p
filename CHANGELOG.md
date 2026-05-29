@@ -2,7 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.0] - 2026-05-17
+## [0.3.0] - 2026-05-29
+
+### Bug Fixes
+
+- _(pwa)_ Normalize shared search text to remove redundant URLs
+- _(pwa)_ Improve shared search parameter handling
+- _(pwa)_ Prevent scroll chaining when side drawer is open
+
+### Features
+
+- _(pwa)_ Add ability to dismiss update banner
+- _(pwa)_ Implement manual update checking
+- _(pwa)_ Add text selection search capability
+- _(ui)_ Add clear search button and improve toolbar layout
+- _(release)_ Implement automated version bumping via conventional commits
+
+### Miscellaneous Tasks
+
+- Sync develop with main release v0.2.0
+- Update test coverage reporters and gitignore
+
+### Refactor
+
+- _(pwa)_ Deduplicate word headings in search results
+- _(shared)_ Extend SharedComponent to support subtitles
+
+### Styling
+
+- _(ui)_ Improve responsive layout and viewport handling in pwa
+
+### Build
+
+- _(deps)_ Integrate sonarcloud and streamline pre-commit workflow
+
+## [0.2.0] - 2026-05-18
+
+### Miscellaneous Tasks
+
+- Release v0.2.0
+
+## [0.1.1] - 2026-05-18
 
 ### Bug Fixes
 
@@ -70,6 +110,7 @@ All notable changes to this project will be documented in this file.
 
 - _(docs)_ Update changelog and bump version to 0.1.1
 - Add release versioning script
+- Release v0.1.1
 
 ### Refactor
 

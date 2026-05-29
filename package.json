@@ -1,6 +1,6 @@
 {
   "name": "pwa-extension-monorepo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "build:ext": "pnpm -F extension build",
     "test": "pnpm -r --if-present test",
     "test:coverage": "pnpm -r --if-present test:coverage",
+    "hook:pre-commit": "pnpm format && pnpm lint && pnpm check && pnpm test",
     "lint": "eslint .",
     "format": "prettier --write .",
     "check": "pnpm -r check",

@@ -15,7 +15,16 @@ describe('SharedComponent', () => {
     render(SharedComponent, { title: 'Test Title' });
     const heading = screen.getByRole('heading', { level: 3 });
     // Text is transformed to uppercase in CSS/HTML via classes
-    expect(heading.textContent).toBe('Test Title');
+    expect(heading.textContent?.trim()).toBe('Test Title');
+  });
+
+  it('renders a compact subtitle next to the title', () => {
+    render(SharedComponent, { title: 'Noun', subtitle: '/test/' });
+
+    expect(screen.getByRole('heading', { level: 3 }).textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'Noun /test/'
+    );
+    expect(screen.getByText('/test/')).toHaveClass('text-xs', 'text-gray-400');
   });
 
   /**
