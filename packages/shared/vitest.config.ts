@@ -11,6 +11,8 @@ export default defineConfig({
   test: {
     environment: 'happy-dom',
     globals: true,
+    // Shared tests intentionally exercise logged failure paths; keep pnpm lifecycle output readable.
+    silent: true,
     setupFiles: ['./src/__tests__/setup.ts'],
     include: ['src/**/*.{test,spec}.{js,ts,svelte}'],
     coverage: {

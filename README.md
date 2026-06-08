@@ -42,6 +42,13 @@ pnpm install
 
 ## Development
 
+Shared Vite environment values live at the repository root so both the PWA and
+extension builds read the same configuration:
+
+```bash
+VITE_GOOGLE_CLIENT_ID=your-google-oauth-client-id.apps.googleusercontent.com
+```
+
 Run the PWA:
 
 ```bash

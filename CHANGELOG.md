@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-06-07
+
+### Bug Fixes
+
+- _(pwa)_ Improve shared search text normalization
+
+### Features
+
+- _(pwa)_ Add about panel
+- _(pwa)_ Include website link in about panel
+- _(shared)_ Implement data synchronization via CRDTs
+- _(pwa)_ Refactor app architecture and implement modular component system
+- _(pwa)_ Add dismiss option to update banner
+
+### Miscellaneous Tasks
+
+- _(extension)_ Rename context menu and cleanup boilerplate
+- _(shared)_ Enable silent mode in vitest configuration
+
+### Refactor
+
+- _(pwa)_ Localize aria labels and test assertions
+- _(pwa)_ Unify sync connection logic into a single toggle button
+
+### Styling
+
+- _(pwa)_ Remove overflow-x-hidden to fix sticky positioning
+
+### Build
+
+- _(pwa)_ Suppress workbox warnings in dev mode
+
 ## [0.3.0] - 2026-05-29
 
 ### Bug Fixes
@@ -20,7 +52,6 @@ All notable changes to this project will be documented in this file.
 
 ### Miscellaneous Tasks
 
-- Sync develop with main release v0.2.0
 - Update test coverage reporters and gitignore
 
 ### Refactor
@@ -31,16 +62,6 @@ All notable changes to this project will be documented in this file.
 ### Styling
 
 - _(ui)_ Improve responsive layout and viewport handling in pwa
-
-### Build
-
-- _(deps)_ Integrate sonarcloud and streamline pre-commit workflow
-
-## [0.2.0] - 2026-05-18
-
-### Miscellaneous Tasks
-
-- Release v0.2.0
 
 ## [0.1.1] - 2026-05-18
 
@@ -54,7 +75,6 @@ All notable changes to this project will be documented in this file.
 
 ### Dependencies
 
-- _(deps)_ Bump version to 0.1.0 across workspace
 - _(deps)_ Add git-cliff and initialize cliff.toml
 
 ### Documentation
@@ -110,7 +130,6 @@ All notable changes to this project will be documented in this file.
 
 - _(docs)_ Update changelog and bump version to 0.1.1
 - Add release versioning script
-- Release v0.1.1
 
 ### Refactor
 

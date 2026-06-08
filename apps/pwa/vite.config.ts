@@ -31,6 +31,7 @@ const buildTime = (process.env.VITE_BUILD_TIME || new Date().toISOString()).trim
 
 export default defineConfig({
   base,
+  envDir: '../..',
   server: {
     host: true
   },
@@ -46,7 +47,10 @@ export default defineConfig({
       registerType: 'prompt',
       injectRegister: 'auto',
       devOptions: {
-        enabled: true
+        enabled: true,
+        // Dev service workers intentionally precache only a placeholder file,
+        // avoiding Workbox warnings when the generated dev folder is otherwise empty.
+        suppressWarnings: true
       },
       manifest: {
         // Asset URLs can stay relative for Pages builds, but the installed app

@@ -1,6 +1,6 @@
 {
   "name": "@workspace/shared",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
@@ -10,10 +10,11 @@
   },
   "dependencies": {
     "svelte": "^5.55.4",
-    "svelte-i18n": "^4.0.1"
+    "svelte-i18n": "^4.0.1",
+    "yjs": "^13.6.27"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@testing-library/dom": "^10.0.0",
     "@testing-library/jest-dom": "^6.0.0",
     "@testing-library/svelte": "^5.0.0",

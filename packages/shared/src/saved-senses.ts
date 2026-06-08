@@ -1,6 +1,7 @@
 import type { Phonetic, Translation } from './dictionary';
 
 export const SAVED_SENSES_STORAGE_KEY = 'dictionary-saved-senses';
+export const SAVED_SENSES_YJS_STORAGE_KEY = 'dictionary-saved-senses-yjs-v1';
 
 export interface SavedSenseTranslation {
   languageCode?: string;
@@ -41,8 +42,75 @@ export interface SavedSense {
 
 export type SavedSenseInput = Omit<SavedSense, 'id' | 'savedAt'>;
 
+interface YjsDocLike {
+  getMap: (name: string) => YjsMapLike<SavedSense>;
+}
+
+interface YjsMapLike<T> {
+  clear: () => void;
+  delete: (key: string) => void;
+  entries: () => IterableIterator<[string, T]>;
+  set: (key: string, value: T) => void;
+}
+
+interface YjsModuleLike {
+  Doc: new () => YjsDocLike;
+  applyUpdate: (doc: YjsDocLike, update: Uint8Array) => void;
+  encodeStateAsUpdate: (doc: YjsDocLike) => Uint8Array;
+}
+
+interface SavedSensesYjsRuntime {
+  doc: YjsDocLike;
+  map: YjsMapLike<SavedSense>;
+  yjs: YjsModuleLike;
+}
+
+let savedSensesYjsRuntime: SavedSensesYjsRuntime | null = null;
+
 function canUseStorage(): boolean {
   return typeof window !== 'undefined' && typeof localStorage !== 'undefined';
+}
+
+function encodeBytes(value: Uint8Array): string {
+  const binary = Array.from(value, (byte) => String.fromCharCode(byte)).join('');
+
+  if (typeof btoa === 'function') {
+    return btoa(binary);
+  }
+
+  /* v8 ignore next 5 -- Node-only fallback for runtimes without btoa. */
+  return (
+    globalThis as typeof globalThis & {
+      Buffer: {
+        from: (value: string, encoding: string) => { toString: (encoding: string) => string };
+      };
+    }
+  ).Buffer.from(binary, 'binary').toString('base64');
+}
+
+function decodeBytes(value: string): Uint8Array {
+  /* v8 ignore next 10 -- Node-only fallback for runtimes without atob. */
+  const binary =
+    typeof atob === 'function'
+      ? atob(value)
+      : (
+          globalThis as typeof globalThis & {
+            Buffer: {
+              from: (value: string, encoding: string) => { toString: (encoding: string) => string };
+            };
+          }
+        ).Buffer.from(value, 'base64').toString('binary');
+
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+async function loadYjs(): Promise<YjsModuleLike | null> {
+  try {
+    return (await import('yjs')) as unknown as YjsModuleLike;
+  } catch (error) {
+    console.warn('Failed to load Yjs saved-senses runtime', error);
+    return null;
+  }
 }
 
 function normalizeStringList(values: string[]): string[] {
@@ -184,18 +252,127 @@ function writeStoredSavedSenses(entries: SavedSense[]): void {
   }
 }
 
+function getRuntimeSavedSenses(): SavedSense[] {
+  if (!savedSensesYjsRuntime) {
+    return readStoredSavedSenses();
+  }
+
+  return Array.from(savedSensesYjsRuntime.map.entries())
+    .map(([, value]) => value)
+    .sort((first, second) => second.savedAt.localeCompare(first.savedAt));
+}
+
+function projectRuntimeSavedSenses(): void {
+  writeStoredSavedSenses(getRuntimeSavedSenses());
+}
+
+function persistRuntimeState(): void {
+  if (!canUseStorage() || !savedSensesYjsRuntime) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(
+      SAVED_SENSES_YJS_STORAGE_KEY,
+      encodeBytes(savedSensesYjsRuntime.yjs.encodeStateAsUpdate(savedSensesYjsRuntime.doc))
+    );
+    projectRuntimeSavedSenses();
+  } catch (error) {
+    console.warn('Failed to persist saved-senses Yjs state', error);
+  }
+}
+
+/**
+ * Initializes the CRDT document that backs saved senses during sync-enabled app
+ * sessions. Existing localStorage data is imported only when no persisted Yjs
+ * state exists, preserving Yjs delete markers after future reloads.
+ */
+export async function initializeSavedSensesSync(): Promise<boolean> {
+  if (savedSensesYjsRuntime) {
+    return true;
+  }
+
+  const yjs = await loadYjs();
+  if (!yjs) {
+    return false;
+  }
+
+  const doc = new yjs.Doc();
+  const map = doc.getMap('savedSenses');
+  savedSensesYjsRuntime = { doc, map, yjs };
+
+  const storedState = canUseStorage() ? localStorage.getItem(SAVED_SENSES_YJS_STORAGE_KEY) : null;
+  if (storedState) {
+    try {
+      yjs.applyUpdate(doc, decodeBytes(storedState));
+      projectRuntimeSavedSenses();
+      return true;
+    } catch (error) {
+      console.warn('Failed to restore saved-senses Yjs state', error);
+    }
+  }
+
+  for (const entry of readStoredSavedSenses()) {
+    map.set(entry.id, entry);
+  }
+  persistRuntimeState();
+  return true;
+}
+
+export function isSavedSensesSyncInitialized(): boolean {
+  return Boolean(savedSensesYjsRuntime);
+}
+
+/**
+ * Test-only hook for resetting the in-memory CRDT document between isolated
+ * storage scenarios. Production code should use clearSavedSenses() so Yjs
+ * deletion operations remain part of the persisted CRDT history.
+ */
+export function resetSavedSensesSyncForTests(): void {
+  savedSensesYjsRuntime = null;
+}
+
+export function getSavedSensesYjsUpdate(): Uint8Array | null {
+  if (!savedSensesYjsRuntime) {
+    return null;
+  }
+
+  return savedSensesYjsRuntime.yjs.encodeStateAsUpdate(savedSensesYjsRuntime.doc);
+}
+
+export async function applySavedSensesYjsUpdate(update: Uint8Array): Promise<boolean> {
+  /* v8 ignore next 3 -- initialize returns false only when the yjs package is absent. */
+  if (!savedSensesYjsRuntime && !(await initializeSavedSensesSync())) {
+    return false;
+  }
+
+  /* v8 ignore next 3 -- kept as a guard against unexpected runtime mutation. */
+  if (!savedSensesYjsRuntime) {
+    return false;
+  }
+
+  savedSensesYjsRuntime.yjs.applyUpdate(savedSensesYjsRuntime.doc, update);
+  persistRuntimeState();
+  return true;
+}
+
 export function getSavedSenses(): SavedSense[] {
-  return readStoredSavedSenses();
+  return getRuntimeSavedSenses();
 }
 
 export function isSavedSense(id: string): boolean {
-  return readStoredSavedSenses().some((entry) => entry.id === id);
+  return getRuntimeSavedSenses().some((entry) => entry.id === id);
 }
 
 export function saveSense(input: SavedSenseInput): SavedSense {
   const nextEntry = normalizeSavedSense(input);
-  const previousEntries = readStoredSavedSenses();
+  if (savedSensesYjsRuntime) {
+    savedSensesYjsRuntime.map.set(nextEntry.id, nextEntry);
+    persistRuntimeState();
+    return nextEntry;
+  }
 
+  const previousEntries = readStoredSavedSenses();
   writeStoredSavedSenses([
     nextEntry,
     ...previousEntries.filter((entry) => entry.id !== nextEntry.id)
@@ -204,15 +381,28 @@ export function saveSense(input: SavedSenseInput): SavedSense {
 }
 
 export function removeSavedSense(id: string): void {
+  if (savedSensesYjsRuntime) {
+    savedSensesYjsRuntime.map.delete(id);
+    persistRuntimeState();
+    return;
+  }
+
   writeStoredSavedSenses(readStoredSavedSenses().filter((entry) => entry.id !== id));
 }
 
 export function clearSavedSenses(): void {
+  if (savedSensesYjsRuntime) {
+    savedSensesYjsRuntime.map.clear();
+    persistRuntimeState();
+    return;
+  }
+
   if (!canUseStorage()) {
     return;
   }
 
   localStorage.removeItem(SAVED_SENSES_STORAGE_KEY);
+  localStorage.removeItem(SAVED_SENSES_YJS_STORAGE_KEY);
 }
 
 export function buildSavedSenseTranslation(

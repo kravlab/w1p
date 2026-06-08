@@ -4,6 +4,7 @@ import {
   DictionaryLookupError,
   buildSavedSenseId,
   clearSavedSenses,
+  enMessages,
   getSearchHistory,
   getSavedSenses
 } from '@workspace/shared';
@@ -13,6 +14,7 @@ const createObjectURL = vi.fn(() => 'blob:saved-senses');
 const revokeObjectURL = vi.fn();
 const scrollToMock = vi.fn();
 const serviceWorkerUpdateMock = vi.fn();
+const t = enMessages;
 
 function setWindowScrollY(value: number): void {
   Object.defineProperty(window, 'scrollY', {
@@ -44,6 +46,17 @@ function setWindowSelectionText(
   } as unknown as Selection);
 }
 
+async function withExpectedConsoleError(run: () => Promise<void>): Promise<void> {
+  // Search failure tests intentionally exercise logged error paths; keep Vitest output clean.
+  const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  try {
+    await run();
+  } finally {
+    consoleErrorSpy.mockRestore();
+  }
+}
+
 const {
   fetchDefinition,
   getDictionaryLogs,
@@ -51,11 +64,15 @@ const {
   clearDictionaryCache,
   appendDictionaryLog,
   cacheDelete,
+  connectSyncProviderMock,
+  disconnectSyncProviderMock,
   saveSense,
   getSavedSensesMock,
   clearSavedSensesMock,
+  initializeSavedSensesSyncMock,
   removeSavedSenseMock,
   needRefreshStore,
+  syncSavedSensesMock,
   updateServiceWorker,
   savedSensesStore
 } = vi.hoisted(() => ({
@@ -65,6 +82,10 @@ const {
   clearDictionaryCache: vi.fn(),
   appendDictionaryLog: vi.fn(),
   cacheDelete: vi.fn().mockResolvedValue(true),
+  connectSyncProviderMock: vi.fn().mockResolvedValue(undefined),
+  disconnectSyncProviderMock: vi.fn(),
+  initializeSavedSensesSyncMock: vi.fn().mockResolvedValue(false),
+  syncSavedSensesMock: vi.fn().mockResolvedValue(undefined),
   savedSensesStore: new Array<Record<string, unknown>>(),
   needRefreshStore: (() => {
     let value = false;
@@ -99,10 +120,14 @@ vi.mock('@workspace/shared', async () => {
     clearDictionaryLogs,
     clearDictionaryCache,
     appendDictionaryLog,
+    connectSyncProvider: connectSyncProviderMock,
     saveSense,
     getSavedSenses: getSavedSensesMock,
     clearSavedSenses: clearSavedSensesMock,
+    disconnectSyncProvider: disconnectSyncProviderMock,
+    initializeSavedSensesSync: initializeSavedSensesSyncMock,
     removeSavedSense: removeSavedSenseMock,
+    syncSavedSenses: syncSavedSensesMock,
     DICTIONARY_CACHE_NAME: 'dictionary-api-cache'
   };
 });
@@ -230,9 +255,9 @@ describe('PWA App', () => {
   it('searches and renders dictionary results with one attribution block', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
     expect(fetchDefinition).toHaveBeenCalledWith('test', {
       includeTranslations: false,
@@ -240,7 +265,7 @@ describe('PWA App', () => {
     });
     expect(await screen.findByText('A test definition')).toBeInTheDocument();
     expect(screen.getByTestId('search-chrome')).toHaveClass('sticky');
-    expect(screen.getAllByText('Original Wiktionary page')).toHaveLength(1);
+    expect(screen.getAllByText(t.saved_source_link)).toHaveLength(1);
     expect(getSearchHistory()[0]).toMatchObject({
       query: 'test',
       status: 'success'
@@ -296,9 +321,9 @@ describe('PWA App', () => {
 
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
     expect(await screen.findByText('A noun definition')).toBeInTheDocument();
     expect(screen.getByText('A verb definition')).toBeInTheDocument();
@@ -315,42 +340,44 @@ describe('PWA App', () => {
   it('clears the current dictionary search from the search toolbar', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
     expect(await screen.findByText('A test definition')).toBeInTheDocument();
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.clear_search }));
 
     expect(input).toHaveValue('');
     expect(screen.queryByText('A test definition')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Clear search' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: t.clear_search })).toBeDisabled();
     expect(localStorage.getItem('pwa-search-state')).toBeNull();
   });
 
   it('keeps search toolbar controls aligned to the same height', async () => {
     render(App);
 
-    expect(await screen.findByRole('button', { name: 'Open menu' })).toHaveClass('h-11', 'w-11');
-    expect(screen.getByPlaceholderText('Search for a word...')).toHaveClass('h-11');
-    expect(screen.getByRole('button', { name: 'Clear search' })).toHaveClass('h-11', 'w-11');
-    expect(screen.getByRole('button', { name: 'Search' })).toHaveClass('h-11');
+    expect(await screen.findByRole('button', { name: t.open_menu })).toHaveClass('h-11', 'w-11');
+    expect(screen.getByPlaceholderText(t.search_placeholder)).toHaveClass('h-11');
+    expect(screen.getByRole('button', { name: t.clear_search })).toHaveClass('h-11', 'w-11');
+    expect(screen.getByRole('button', { name: t.search_button })).toHaveClass('h-11');
   });
 
-  it('keeps the mobile shell constrained to the viewport width', async () => {
+  it('keeps the mobile shell constrained without breaking sticky search chrome', async () => {
     render(App);
 
     const main = await screen.findByRole('main');
     const searchChrome = await screen.findByTestId('search-chrome');
 
-    expect(main).toHaveClass('min-h-dvh', 'w-full', 'overflow-x-hidden');
+    expect(main).toHaveClass('min-h-dvh', 'w-full');
+    expect(main).not.toHaveClass('overflow-x-hidden');
+    expect(searchChrome.closest('.flex')).not.toHaveClass('overflow-x-hidden');
     expect(searchChrome.closest('section')).toHaveClass('min-w-0');
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Log' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_log }));
 
-    const logPanel = screen.getByText('Log history').closest('section') as HTMLElement;
-    const logHeader = screen.getByText('Log history').closest('header') as HTMLElement;
+    const logPanel = screen.getByText(t.log_title).closest('section') as HTMLElement;
+    const logHeader = screen.getByText(t.log_title).closest('header') as HTMLElement;
 
     expect(logPanel).toHaveClass('w-full', 'min-w-0');
     expect(logHeader).toHaveClass('flex-col', 'sm:flex-row');
@@ -359,13 +386,13 @@ describe('PWA App', () => {
   it('locks page scrolling while the side menu is open', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
 
     const sideMenu = screen.getByRole('complementary');
     expect(document.body.style.overflow).toBe('hidden');
     expect(sideMenu).toHaveClass('overflow-y-auto', 'overscroll-contain');
 
-    await fireEvent.click(screen.getAllByRole('button', { name: 'Close menu' })[0]);
+    await fireEvent.click(screen.getAllByRole('button', { name: t.close_menu })[0]);
 
     await waitFor(() => {
       expect(document.body.style.overflow).toBe('');
@@ -376,7 +403,8 @@ describe('PWA App', () => {
     render(App);
 
     const searchChrome = await screen.findByTestId('search-chrome');
-    expect(searchChrome).toHaveClass('translate-y-0', 'opacity-100');
+    expect(searchChrome).toHaveClass('sticky', 'top-3', 'translate-y-0', 'opacity-100');
+    expect(searchChrome.closest('.flex')).not.toHaveClass('overflow-x-hidden');
 
     setWindowScrollY(140);
     window.dispatchEvent(new Event('scroll'));
@@ -400,31 +428,31 @@ describe('PWA App', () => {
   it('shows a back-to-top button after scrolling and jumps to the page start', async () => {
     render(App);
 
-    expect(screen.queryByRole('button', { name: 'Back to top' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: t.scroll_to_top })).not.toBeInTheDocument();
 
     setWindowScrollY(260);
     window.dispatchEvent(new Event('scroll'));
 
-    const backToTopButton = await screen.findByRole('button', { name: 'Back to top' });
+    const backToTopButton = await screen.findByRole('button', { name: t.scroll_to_top });
     await fireEvent.click(backToTopButton);
 
     expect(scrollToMock).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' });
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: 'Back to top' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: t.scroll_to_top })).not.toBeInTheDocument();
     });
   });
 
   it('keeps search-result action buttons the same size', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
     await screen.findByText('A test definition');
 
-    expect(screen.getByRole('button', { name: 'Save' })).toHaveClass('h-9', 'w-9');
-    expect(screen.getByRole('button', { name: 'More save options' })).toHaveClass('h-9', 'w-9');
+    expect(screen.getByRole('button', { name: t.save_sense })).toHaveClass('h-9', 'w-9');
+    expect(screen.getByRole('button', { name: t.save_menu_label })).toHaveClass('h-9', 'w-9');
   });
 
   it('shows selection actions and searches selected page text', async () => {
@@ -433,7 +461,7 @@ describe('PWA App', () => {
 
     document.dispatchEvent(new Event('selectionchange'));
 
-    const selectionButton = await screen.findByRole('button', { name: 'Search selected text' });
+    const selectionButton = await screen.findByRole('button', { name: t.selection_search_button });
     expect(selectionButton).toHaveTextContent('Search');
     expect(selectionButton).toHaveStyle({ top: '130px', left: '85px' });
     await fireEvent.click(selectionButton);
@@ -443,7 +471,9 @@ describe('PWA App', () => {
       translationLanguageCode: 'all'
     });
     expect(await screen.findByDisplayValue('selected word')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Search selected text' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: t.selection_search_button })
+    ).not.toBeInTheDocument();
   });
 
   it('asks for confirmation before deleting a custom translation', async () => {
@@ -453,21 +483,21 @@ describe('PWA App', () => {
     );
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
     await screen.findByText('A test definition');
-    await fireEvent.click(screen.getByRole('checkbox', { name: 'Include translations' }));
+    await fireEvent.click(screen.getByRole('checkbox', { name: t.translations_toggle }));
     await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'ru' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'More save options' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Save with custom translation' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.save_menu_label }));
+    await fireEvent.click(screen.getByRole('button', { name: t.save_with_custom_translation }));
 
-    const translationInput = screen.getByPlaceholderText('Your translation');
+    const translationInput = screen.getByPlaceholderText(t.custom_translation_placeholder);
     await fireEvent.input(translationInput, { target: { value: 'my translation' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Save translation' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.custom_translation_save }));
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.custom_translation_delete }));
 
     expect(confirm).toHaveBeenCalledWith('Remove this saved sense?');
     expect(removeSavedSenseMock).not.toHaveBeenCalled();
@@ -619,6 +649,21 @@ describe('PWA App', () => {
     expect(await screen.findByDisplayValue('big green tree')).toBeInTheDocument();
   });
 
+  it('removes a duplicated text-fragment URL from the shared search prefill', async () => {
+    const sharedUrl =
+      'https://example.com/abcd-123456#:~:text=Qwerty%20copy%2Dpaste-,query,-from%20zx%20cvbnm';
+    window.history.replaceState(
+      {},
+      '',
+      `/?text=${encodeURIComponent(`"query" ${sharedUrl}`)}&url=${encodeURIComponent(sharedUrl)}`
+    );
+
+    render(App);
+
+    expect(await screen.findByDisplayValue('query')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue(/medium\.com/)).not.toBeInTheDocument();
+  });
+
   it('passes includeTranslations when the checkbox is enabled', async () => {
     fetchDefinition.mockResolvedValueOnce({
       entries: [
@@ -660,14 +705,14 @@ describe('PWA App', () => {
 
     render(App);
 
-    await fireEvent.click(await screen.findByLabelText('Include translations'));
+    await fireEvent.click(await screen.findByLabelText(t.translations_toggle));
     const languageSelect = screen.getByRole('combobox') as HTMLSelectElement;
     languageSelect.value = 'ru';
     await fireEvent.change(languageSelect);
     expect(languageSelect.value).toBe('ru');
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
     expect(fetchDefinition).toHaveBeenCalledWith('test', {
       includeTranslations: true,
@@ -717,10 +762,10 @@ describe('PWA App', () => {
 
     render(App);
 
-    await fireEvent.click(await screen.findByLabelText('Include translations'));
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    await fireEvent.click(await screen.findByLabelText(t.translations_toggle));
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
     expect(await screen.findByText('Russian: тест')).toBeInTheDocument();
     expect(screen.getByText('German: Test')).toBeInTheDocument();
@@ -737,10 +782,13 @@ describe('PWA App', () => {
   it('shows persistent storage status and requests protection', async () => {
     render(App);
 
-    expect(await screen.findByText('Persistent storage is not enabled.')).toBeInTheDocument();
-    await fireEvent.click(screen.getByRole('button', { name: 'Protect app data' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_about }));
 
-    expect(await screen.findByText('Persistent storage is enabled.')).toBeInTheDocument();
+    expect(await screen.findByText(t.storage_persistent_disabled)).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: t.storage_request_button }));
+
+    expect(await screen.findByText(t.storage_persistent_enabled)).toBeInTheDocument();
   });
 
   it('logs runtime window errors', async () => {
@@ -768,10 +816,10 @@ describe('PWA App', () => {
   it('saves a definition without translation in all-languages mode', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
     expect(saveSense).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -782,7 +830,7 @@ describe('PWA App', () => {
         translation: undefined
       })
     );
-    expect(await screen.findByRole('button', { name: 'Remove' })).toHaveClass(
+    expect(await screen.findByRole('button', { name: t.remove_sense })).toHaveClass(
       'border-rose-200',
       'bg-rose-50',
       'text-rose-700'
@@ -792,16 +840,16 @@ describe('PWA App', () => {
   it('updates the search result button to remove when a selected translation language has no match', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByLabelText('Include translations'));
+    await fireEvent.click(await screen.findByLabelText(t.translations_toggle));
     const languageSelect = screen.getByRole('combobox') as HTMLSelectElement;
     await fireEvent.change(languageSelect, { target: { value: 'ru' } });
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
-    expect(await screen.findByRole('button', { name: 'Remove' })).toHaveClass(
+    expect(await screen.findByRole('button', { name: t.remove_sense })).toHaveClass(
       'border-rose-200',
       'bg-rose-50',
       'text-rose-700'
@@ -811,18 +859,18 @@ describe('PWA App', () => {
   it('saves a definition with a user-provided translation from the save menu', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByLabelText('Include translations'));
+    await fireEvent.click(await screen.findByLabelText(t.translations_toggle));
     const languageSelect = screen.getByRole('combobox') as HTMLSelectElement;
     await fireEvent.change(languageSelect, { target: { value: 'ru' } });
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'More save options' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Save with custom translation' }));
-    await fireEvent.input(screen.getByPlaceholderText('Your translation'), {
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_menu_label }));
+    await fireEvent.click(screen.getByRole('button', { name: t.save_with_custom_translation }));
+    await fireEvent.input(screen.getByPlaceholderText(t.custom_translation_placeholder), {
       target: { value: 'quality check' }
     });
-    await fireEvent.click(screen.getByRole('button', { name: 'Save translation' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.custom_translation_save }));
 
     expect(saveSense).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -844,26 +892,26 @@ describe('PWA App', () => {
   it('edits a user-provided translation from the search result', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByLabelText('Include translations'));
+    await fireEvent.click(await screen.findByLabelText(t.translations_toggle));
     const languageSelect = screen.getByRole('combobox') as HTMLSelectElement;
     await fireEvent.change(languageSelect, { target: { value: 'ru' } });
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'More save options' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Save with custom translation' }));
-    await fireEvent.input(screen.getByPlaceholderText('Your translation'), {
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_menu_label }));
+    await fireEvent.click(screen.getByRole('button', { name: t.save_with_custom_translation }));
+    await fireEvent.input(screen.getByPlaceholderText(t.custom_translation_placeholder), {
       target: { value: 'quality check' }
     });
-    await fireEvent.click(screen.getByRole('button', { name: 'Save translation' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.custom_translation_save }));
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.custom_translation_edit }));
     const customTranslationInput = screen.getByPlaceholderText(
-      'Your translation'
+      t.custom_translation_placeholder
     ) as HTMLInputElement;
     expect(customTranslationInput.value).toBe('quality check');
     await fireEvent.input(customTranslationInput, { target: { value: 'manual check' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Save translation' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.custom_translation_save }));
 
     expect(await screen.findByText('manual check')).toBeInTheDocument();
     expect(screen.queryByText('quality check')).not.toBeInTheDocument();
@@ -872,20 +920,20 @@ describe('PWA App', () => {
   it('deletes a user-provided translation from the search result', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByLabelText('Include translations'));
+    await fireEvent.click(await screen.findByLabelText(t.translations_toggle));
     const languageSelect = screen.getByRole('combobox') as HTMLSelectElement;
     await fireEvent.change(languageSelect, { target: { value: 'ru' } });
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'More save options' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Save with custom translation' }));
-    await fireEvent.input(screen.getByPlaceholderText('Your translation'), {
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_menu_label }));
+    await fireEvent.click(screen.getByRole('button', { name: t.save_with_custom_translation }));
+    await fireEvent.input(screen.getByPlaceholderText(t.custom_translation_placeholder), {
       target: { value: 'quality check' }
     });
-    await fireEvent.click(screen.getByRole('button', { name: 'Save translation' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.custom_translation_save }));
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.custom_translation_delete }));
 
     expect(removeSavedSenseMock).toHaveBeenCalled();
     expect(screen.queryByText('quality check')).not.toBeInTheDocument();
@@ -894,48 +942,50 @@ describe('PWA App', () => {
   it('requires a specific language before saving a custom translation', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'More save options' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_menu_label }));
 
-    expect(screen.getByRole('button', { name: 'Choose a language first' })).toBeDisabled();
-    expect(screen.queryByText('Save with custom translation')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: t.custom_translation_choose_language })
+    ).toBeDisabled();
+    expect(screen.queryByText(t.save_with_custom_translation)).not.toBeInTheDocument();
   });
 
   it('closes the save options menu when clicking outside it', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByLabelText('Include translations'));
+    await fireEvent.click(await screen.findByLabelText(t.translations_toggle));
     const languageSelect = screen.getByRole('combobox') as HTMLSelectElement;
     await fireEvent.change(languageSelect, { target: { value: 'ru' } });
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'More save options' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_menu_label }));
 
     expect(
-      screen.getByRole('button', { name: 'Save with custom translation' })
+      screen.getByRole('button', { name: t.save_with_custom_translation })
     ).toBeInTheDocument();
 
     await fireEvent.pointerDown(input);
 
     expect(
-      screen.queryByRole('button', { name: 'Save with custom translation' })
+      screen.queryByRole('button', { name: t.save_with_custom_translation })
     ).not.toBeInTheDocument();
   });
 
   it('removes a saved definition directly from dictionary view', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
     expect(getSavedSenses()).toHaveLength(1);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.remove_sense }));
 
     expect(getSavedSenses()).toHaveLength(0);
   });
@@ -943,32 +993,34 @@ describe('PWA App', () => {
   it('opens the saved panel and renders saved senses', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
     expect(getSavedSenses()).toHaveLength(1);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Saved' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_saved }));
 
-    expect(await screen.findByText('Saved senses')).toBeInTheDocument();
+    expect(await screen.findByText(t.saved_title)).toBeInTheDocument();
     expect(screen.getAllByText('A test definition')).toHaveLength(2);
   });
 
   it('opens a saved sense in the dictionary', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Saved' }));
-    const savedPanel = screen.getByText('Saved senses').closest('section');
-    await fireEvent.click(within(savedPanel as HTMLElement).getByRole('button', { name: 'Open' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_saved }));
+    const savedPanel = screen.getByText(t.saved_title).closest('section');
+    await fireEvent.click(
+      within(savedPanel as HTMLElement).getByRole('button', { name: t.saved_open })
+    );
 
     expect(fetchDefinition).toHaveBeenLastCalledWith('test', {
       includeTranslations: false,
@@ -980,16 +1032,16 @@ describe('PWA App', () => {
   it('removes a saved sense from the saved panel', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Saved' }));
-    const savedPanel = screen.getByText('Saved senses').closest('section');
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_saved }));
+    const savedPanel = screen.getByText(t.saved_title).closest('section');
     await fireEvent.click(
-      within(savedPanel as HTMLElement).getByRole('button', { name: 'Remove' })
+      within(savedPanel as HTMLElement).getByRole('button', { name: t.remove_sense })
     );
 
     expect(confirm).toHaveBeenCalledWith('Remove this saved sense?');
@@ -999,32 +1051,32 @@ describe('PWA App', () => {
   it('clears all saved senses from the saved panel', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Saved' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Clear saved' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_saved }));
+    await fireEvent.click(screen.getByRole('button', { name: t.saved_clear }));
 
     expect(confirm).toHaveBeenCalledWith('Clear all saved senses?');
     expect(clearSavedSensesMock).toHaveBeenCalled();
     expect(getSavedSenses()).toHaveLength(0);
-    expect(screen.getByText('No saved senses yet.')).toBeInTheDocument();
+    expect(screen.getByText(t.saved_empty)).toBeInTheDocument();
   });
 
   it('exports saved senses as JSON from the saved panel', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Saved' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Export JSON' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_saved }));
+    await fireEvent.click(screen.getByRole('button', { name: t.saved_export }));
 
     expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
@@ -1034,18 +1086,18 @@ describe('PWA App', () => {
   it('filters saved senses by search term', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Saved' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_saved }));
 
-    const savedSearch = screen.getByPlaceholderText('Search saved senses');
+    const savedSearch = screen.getByPlaceholderText(t.saved_search_placeholder);
     await fireEvent.input(savedSearch, { target: { value: 'missing' } });
 
-    expect(screen.getByText('No saved senses yet.')).toBeInTheDocument();
+    expect(screen.getByText(t.saved_empty)).toBeInTheDocument();
 
     await fireEvent.input(savedSearch, { target: { value: 'test definition' } });
     expect(screen.getAllByText('A test definition')).toHaveLength(2);
@@ -1054,10 +1106,10 @@ describe('PWA App', () => {
   it('sorts saved senses by word', async () => {
     render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
+    const input = await screen.findByPlaceholderText(t.search_placeholder);
     await fireEvent.input(input, { target: { value: 'test' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.save_sense }));
 
     savedSensesStore.unshift({
       id: 'saved-0',
@@ -1077,13 +1129,13 @@ describe('PWA App', () => {
       sourceUrl: 'https://en.wiktionary.org/wiki/alpha'
     });
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Saved' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_saved }));
 
-    const sortSelect = screen.getByDisplayValue('Newest first');
+    const sortSelect = screen.getByDisplayValue(t.saved_sort_recent);
     await fireEvent.change(sortSelect, { target: { value: 'word' } });
 
-    const savedPanel = screen.getByText('Saved senses').closest('section');
+    const savedPanel = screen.getByText(t.saved_title).closest('section');
     await waitFor(() => {
       const headings = within(savedPanel as HTMLElement)
         .getAllByRole('heading', { level: 3 })
@@ -1128,29 +1180,27 @@ describe('PWA App', () => {
         word: 'persistent-storage',
         type: 'storage_unsupported',
         source: 'unknown',
-        message: 'Persistent storage is not supported in this browser.'
+        message: t.storage_unavailable
       }
     ]);
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Log' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_log }));
 
-    expect(await screen.findByText('Dictionary events')).toBeInTheDocument();
-    expect(await screen.findByText('Storage events')).toBeInTheDocument();
-    expect(
-      await screen.findByText('Persistent storage is not supported in this browser.')
-    ).toBeInTheDocument();
+    expect(await screen.findByText(t.log_section_dictionary)).toBeInTheDocument();
+    expect(await screen.findByText(t.log_section_storage)).toBeInTheDocument();
+    expect(await screen.findByText(t.storage_unavailable)).toBeInTheDocument();
   });
 
   it('opens the log panel and filters entries', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Log' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_log }));
 
-    expect(await screen.findByText('Log history')).toBeInTheDocument();
-    const filter = screen.getByRole('combobox', { name: 'Type' });
+    expect(await screen.findByText(t.log_title)).toBeInTheDocument();
+    const filter = screen.getByRole('combobox', { name: t.log_type_filter });
     await fireEvent.change(filter, { target: { value: 'success' } });
     expect(screen.getByText('Lookup succeeded for "test".')).toBeInTheDocument();
   });
@@ -1176,9 +1226,9 @@ describe('PWA App', () => {
     ]);
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Log' }));
-    await fireEvent.change(screen.getByRole('combobox', { name: 'Source' }), {
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_log }));
+    await fireEvent.change(screen.getByRole('combobox', { name: t.log_source }), {
       target: { value: 'unknown' }
     });
 
@@ -1191,11 +1241,11 @@ describe('PWA App', () => {
   it('opens the cache panel and filters cache entries', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Cache' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_cache }));
 
-    expect(await screen.findByText('Cache entries')).toBeInTheDocument();
-    const search = screen.getByPlaceholderText('Search cache by word or URL');
+    expect(await screen.findByText(t.cache_title)).toBeInTheDocument();
+    const search = screen.getByPlaceholderText(t.cache_search_placeholder);
     await fireEvent.input(search, { target: { value: 'test' } });
     expect(
       screen.getByText('https://freedictionaryapi.com/api/v1/entries/en/test')
@@ -1203,29 +1253,34 @@ describe('PWA App', () => {
     expect(screen.getByText('https://en.wiktionary.org/wiki/test')).toBeInTheDocument();
   });
 
-  it('shows the current build version in the side menu', async () => {
+  it('shows the current build version in the about panel', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_about }));
 
-    expect(screen.getByText('Version')).toBeInTheDocument();
+    expect(await screen.findByText(t.about_title)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: t.about_website_link })).toHaveAttribute(
+      'href',
+      new URL(import.meta.env.BASE_URL || '/', window.location.origin).toString()
+    );
+    expect(screen.getByText(t.build_version_title)).toBeInTheDocument();
     expect(screen.getByText('0.0.0')).toBeInTheDocument();
-    expect(screen.getByText('SHA')).toBeInTheDocument();
+    expect(screen.getByText(t.build_sha_title)).toBeInTheDocument();
     expect(screen.getByText(/-dev$/)).toBeInTheDocument();
     expect(screen.getByText(/^Built:/)).toBeInTheDocument();
   });
 
-  it('checks for PWA updates from the side menu status panel', async () => {
+  it('checks for PWA updates from the about panel', async () => {
     serviceWorkerUpdateMock.mockResolvedValueOnce(undefined);
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_about }));
+    await fireEvent.click(screen.getByRole('button', { name: t.update_check_button }));
 
     expect(serviceWorkerUpdateMock).toHaveBeenCalledOnce();
-    expect(
-      await screen.findByText('You are using the latest available version.')
-    ).toBeInTheDocument();
+    expect(await screen.findByText(t.update_current)).toBeInTheDocument();
   });
 
   it('shows when the app update channel is not active yet', async () => {
@@ -1237,20 +1292,35 @@ describe('PWA App', () => {
     });
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_about }));
+    await fireEvent.click(screen.getByRole('button', { name: t.update_check_button }));
 
-    expect(await screen.findByText('App update channel is not active yet.')).toBeInTheDocument();
+    expect(await screen.findByText(t.update_unavailable)).toBeInTheDocument();
   });
 
   it('groups developer tools in the side menu development section', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
 
-    expect(screen.getByText('Development')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Log' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Cache' })).toBeInTheDocument();
+    expect(screen.getByText(t.menu_development)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.menu_log })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.menu_cache })).toBeInTheDocument();
+  });
+
+  it('opens the sync panel from the side menu', async () => {
+    render(App);
+
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_sync }));
+
+    expect(await screen.findByText(t.sync_title)).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: t.sync_provider_label })).toHaveValue(
+      'google-drive'
+    );
+    expect(screen.getByRole('button', { name: t.sync_connect })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.sync_now })).toBeInTheDocument();
   });
 
   it('starts PWA installation from the side menu', async () => {
@@ -1265,8 +1335,8 @@ describe('PWA App', () => {
     render(App);
     window.dispatchEvent(installEvent);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Install app' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_install }));
 
     expect(prompt).toHaveBeenCalledOnce();
   });
@@ -1276,8 +1346,8 @@ describe('PWA App', () => {
 
     render(App);
 
-    expect(await screen.findByText('A new version is ready.')).toBeInTheDocument();
-    await fireEvent.click(screen.getByRole('button', { name: 'Update now' }));
+    expect(await screen.findByText(t.pwa_update_ready)).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: t.pwa_update_button }));
 
     expect(updateServiceWorker).toHaveBeenCalledWith(true);
   });
@@ -1287,11 +1357,11 @@ describe('PWA App', () => {
 
     render(App);
 
-    expect(await screen.findByText('A new version is ready.')).toBeInTheDocument();
-    await fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(await screen.findByText(t.pwa_update_ready)).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: t.pwa_update_later }));
 
     await waitFor(() => {
-      expect(screen.queryByText('A new version is ready.')).not.toBeInTheDocument();
+      expect(screen.queryByText(t.pwa_update_ready)).not.toBeInTheDocument();
     });
     expect(updateServiceWorker).not.toHaveBeenCalled();
   });
@@ -1320,8 +1390,8 @@ describe('PWA App', () => {
 
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Cache' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_cache }));
 
     expect(await screen.findByText('shit')).toBeInTheDocument();
     expect(screen.queryByText('shit?translations=true')).not.toBeInTheDocument();
@@ -1330,24 +1400,24 @@ describe('PWA App', () => {
   it('clears log history and cache with confirmation', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Log' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Clear log' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_log }));
+    await fireEvent.click(screen.getByRole('button', { name: t.log_clear }));
     expect(clearDictionaryLogs).toHaveBeenCalled();
 
-    await fireEvent.click(screen.getAllByRole('button', { name: 'Close log' })[1]);
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Cache' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Clear cache' }));
+    await fireEvent.click(screen.getAllByRole('button', { name: t.log_close })[1]);
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_cache }));
+    await fireEvent.click(screen.getByRole('button', { name: t.cache_clear }));
     expect(clearDictionaryCache).toHaveBeenCalled();
   });
 
   it('opens a cached entry in the dictionary', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Cache' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_cache }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.saved_open }));
 
     expect(fetchDefinition).toHaveBeenCalledWith('test', {
       includeTranslations: false,
@@ -1359,9 +1429,9 @@ describe('PWA App', () => {
   it('deletes a single cache entry after confirmation', async () => {
     render(App);
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Cache' }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.open_menu }));
+    await fireEvent.click(screen.getByRole('button', { name: t.menu_cache }));
+    await fireEvent.click(await screen.findByRole('button', { name: t.custom_translation_delete }));
 
     expect(confirm).toHaveBeenCalledWith('Delete this cache entry?');
     expect(cacheDelete).toHaveBeenCalledWith(
@@ -1370,76 +1440,84 @@ describe('PWA App', () => {
   });
 
   it('shows the dictionary not-found message for missing words', async () => {
-    fetchDefinition.mockRejectedValueOnce(new DictionaryLookupError('Word not found', 'not_found'));
-    render(App);
+    await withExpectedConsoleError(async () => {
+      fetchDefinition.mockRejectedValueOnce(
+        new DictionaryLookupError('Word not found', 'not_found')
+      );
+      render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
-    await fireEvent.input(input, { target: { value: 'missing' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+      const input = await screen.findByPlaceholderText(t.search_placeholder);
+      await fireEvent.input(input, { target: { value: 'missing' } });
+      await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
-    expect(await screen.findByText('Word not found')).toBeInTheDocument();
-    expect(appendDictionaryLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        word: 'missing',
-        type: 'not_found',
-        message: 'Word not found'
-      })
-    );
-    expect(getSearchHistory()[0]).toMatchObject({
-      query: 'missing',
-      status: 'not_found'
+      expect(await screen.findByText('Word not found')).toBeInTheDocument();
+      expect(appendDictionaryLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          word: 'missing',
+          type: 'not_found',
+          message: 'Word not found'
+        })
+      );
+      expect(getSearchHistory()[0]).toMatchObject({
+        query: 'missing',
+        status: 'not_found'
+      });
     });
   });
 
   it('shows the generic fallback message for unexpected errors', async () => {
-    fetchDefinition.mockRejectedValueOnce(new Error('boom'));
-    render(App);
+    await withExpectedConsoleError(async () => {
+      fetchDefinition.mockRejectedValueOnce(new Error('boom'));
+      render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
-    await fireEvent.input(input, { target: { value: 'broken' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+      const input = await screen.findByPlaceholderText(t.search_placeholder);
+      await fireEvent.input(input, { target: { value: 'broken' } });
+      await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
-    expect(
-      await screen.findByText('Something went wrong while searching. Please try again.')
-    ).toBeInTheDocument();
-    expect(appendDictionaryLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        word: 'broken',
-        type: 'unknown',
-        source: 'unknown'
-      })
-    );
-    expect(getSearchHistory()[0]).toMatchObject({
-      query: 'broken',
-      status: 'failed',
-      failureReason: 'unknown'
+      expect(
+        await screen.findByText('Something went wrong while searching. Please try again.')
+      ).toBeInTheDocument();
+      expect(appendDictionaryLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          word: 'broken',
+          type: 'unknown',
+          source: 'unknown'
+        })
+      );
+      expect(getSearchHistory()[0]).toMatchObject({
+        query: 'broken',
+        status: 'failed',
+        failureReason: 'unknown'
+      });
     });
   });
 
   it('retries a failed search from the search input history', async () => {
-    fetchDefinition.mockRejectedValueOnce(new Error('offline'));
-    render(App);
+    await withExpectedConsoleError(async () => {
+      fetchDefinition.mockRejectedValueOnce(new Error('offline'));
+      render(App);
 
-    const input = await screen.findByPlaceholderText('Search for a word...');
-    await fireEvent.input(input, { target: { value: 'retryme' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+      const input = await screen.findByPlaceholderText(t.search_placeholder);
+      await fireEvent.input(input, { target: { value: 'retryme' } });
+      await fireEvent.click(screen.getByRole('button', { name: t.search_button }));
 
-    expect(
-      await screen.findByText('Something went wrong while searching. Please try again.')
-    ).toBeInTheDocument();
+      expect(
+        await screen.findByText('Something went wrong while searching. Please try again.')
+      ).toBeInTheDocument();
 
-    await fireEvent.focus(input);
-    await fireEvent.click(screen.getByRole('button', { name: /retryme/ }));
+      await fireEvent.focus(input);
+      await fireEvent.click(screen.getByRole('button', { name: /retryme/ }));
 
-    expect(fetchDefinition).toHaveBeenLastCalledWith('retryme', {
-      includeTranslations: false,
-      translationLanguageCode: 'all'
-    });
-    expect(await screen.findByText('A test definition')).toBeInTheDocument();
-    expect(getSearchHistory()[0]).toMatchObject({
-      query: 'retryme',
-      status: 'success',
-      attempts: 2
+      expect(fetchDefinition).toHaveBeenLastCalledWith('retryme', {
+        includeTranslations: false,
+        translationLanguageCode: 'all'
+      });
+      expect(await screen.findByText('A test definition')).toBeInTheDocument();
+      expect(getSearchHistory()[0]).toMatchObject({
+        query: 'retryme',
+        status: 'success',
+        attempts: 2
+      });
     });
   });
 });

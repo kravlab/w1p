@@ -5,7 +5,7 @@ Svelte browser extension popup for `w1p`, used to view selected text captured fr
 ## Features
 
 - Manifest V3 extension
-- background service worker that adds a `Send to Extension` context-menu item
+- background service worker that adds a `Send to w1p` context-menu item
 - popup UI that reads the latest captured text from `chrome.storage.local`
 - shared translations and UI components from `@workspace/shared`
 

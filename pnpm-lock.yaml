@@ -171,10 +171,13 @@ importers:
       svelte-i18n:
         specifier: ^4.0.1
         version: 4.0.1(svelte@5.55.5(@typescript-eslint/types@8.59.1))
+      yjs:
+        specifier: ^13.6.27
+        version: 13.6.31
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
-        specifier: ^5.0.0
-        version: 5.1.1(svelte@5.55.5(@typescript-eslint/types@8.59.1))(vite@8.0.10(@types/node@24.12.2)(esbuild@0.27.7)(jiti@1.21.7)(terser@5.46.2))
+        specifier: ^7.0.0
+        version: 7.0.0(svelte@5.55.5(@typescript-eslint/types@8.59.1))(vite@8.0.10(@types/node@24.12.2)(esbuild@0.27.7)(jiti@1.21.7)(terser@5.46.2))
       '@testing-library/dom':
         specifier: ^10.0.0
         version: 10.4.1
@@ -3710,6 +3713,12 @@ packages:
         integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==
       }
 
+  isomorphic.js@0.2.5:
+    resolution:
+      {
+        integrity: sha512-PIeMbHqMt4DnUP3MA/Flc0HElYjMXArsw1qwJZcm9sqR8mq3l8NYizFMty0pWwE/tzIGH3EKK5+jes5mAr85yw==
+      }
+
   istanbul-lib-coverage@3.2.2:
     resolution:
       {
@@ -3850,6 +3859,14 @@ packages:
         integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==
       }
     engines: { node: '>= 0.8.0' }
+
+  lib0@0.2.117:
+    resolution:
+      {
+        integrity: sha512-DeXj9X5xDCjgKLU/7RR+/HQEVzuuEUiwldwOGsHK/sfAfELGWEyTcf0x+uOvCvK3O2zPmZePXWL85vtia6GyZw==
+      }
+    engines: { node: '>=16' }
+    hasBin: true
 
   lightningcss-android-arm64@1.32.0:
     resolution:
@@ -5560,6 +5577,13 @@ packages:
         integrity: sha512-vIYeF1u3CjlhAFekPPAk2h/Kv4T3mAkMox5OymRiJQB0spDP10LHvt+K7G9Ny6NuuMAb25/6n1qyUjAcGNf/AA==
       }
     engines: { node: '>= 6' }
+
+  yjs@13.6.31:
+    resolution:
+      {
+        integrity: sha512-Eq+5BRfbeGyqGVrTJL3bEcr8gKkxPuyuoHmAwpk52fDb8kOVMrfVSTRPd6yiGgX5Fskb96qCRjzjbRjrL4YEnw==
+      }
+    engines: { node: '>=16.0.0', npm: '>=8.0.0' }
 
   yocto-queue@0.1.0:
     resolution:
@@ -7888,6 +7912,8 @@ snapshots:
 
   isexe@2.0.0: {}
 
+  isomorphic.js@0.2.5: {}
+
   istanbul-lib-coverage@3.2.2: {}
 
   istanbul-lib-report@3.0.1:
@@ -7951,6 +7977,10 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
       type-check: 0.4.0
+
+  lib0@0.2.117:
+    dependencies:
+      isomorphic.js: 0.2.5
 
   lightningcss-android-arm64@1.32.0:
     optional: true
@@ -9045,6 +9075,10 @@ snapshots:
   yallist@3.1.1: {}
 
   yaml@1.10.3: {}
+
+  yjs@13.6.31:
+    dependencies:
+      lib0: 0.2.117
 
   yocto-queue@0.1.0: {}
 

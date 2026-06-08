@@ -48,6 +48,7 @@ jobs:
         env:
           VITE_BASE_URL: ./
           VITE_APP_PATH: /w1p/
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
 
       - name: Deploy
         uses: JamesIves/github-pages-deploy-action@v4

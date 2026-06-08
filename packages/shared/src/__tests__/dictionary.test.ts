@@ -103,6 +103,28 @@ describe('Dictionary API Client', () => {
     vi.restoreAllMocks();
   });
 
+  async function withExpectedConsoleError(run: () => Promise<void>): Promise<void> {
+    // Failure-path assertions intentionally trigger dictionary diagnostics; suppress only that noise.
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await run();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  }
+
+  async function withExpectedConsoleWarn(run: () => Promise<void>): Promise<void> {
+    // Missing-word assertions intentionally trigger dictionary diagnostics; suppress only that noise.
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await run();
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  }
+
   it('should return data for a valid word and store it in cache', async () => {
     const mockResponse = {
       ok: true,
@@ -174,39 +196,44 @@ describe('Dictionary API Client', () => {
   });
 
   it('should throw "Word not found" for 404', async () => {
-    (fetch as any).mockResolvedValue({
-      ok: false,
-      status: 404
+    await withExpectedConsoleWarn(async () => {
+      (fetch as any).mockResolvedValue({
+        ok: false,
+        status: 404
+      });
+
+      const mockCache = await caches.open('any');
+      (mockCache.match as any).mockResolvedValue(null);
+
+      await expect(fetchDefinition('unknown')).rejects.toThrow('Word not found');
     });
-
-    const mockCache = await caches.open('any');
-    (mockCache.match as any).mockResolvedValue(null);
-
-    await expect(fetchDefinition('unknown')).rejects.toThrow('Word not found');
   });
 
   it('should throw generic error for other failure statuses', async () => {
-    (fetch as any).mockResolvedValue({
-      ok: false,
-      status: 500
-    });
+    await withExpectedConsoleError(async () => {
+      (fetch as any).mockResolvedValue({
+        ok: false,
+        status: 500
+      });
 
-    const mockCache = await caches.open('any');
-    (mockCache.match as any).mockResolvedValue(null);
+      const mockCache = await caches.open('any');
+      (mockCache.match as any).mockResolvedValue(null);
 
-    await expect(fetchDefinition('error')).rejects.toMatchObject({
-      code: 'server'
+      await expect(fetchDefinition('error')).rejects.toMatchObject({
+        code: 'server'
+      });
     });
   });
 
   it('should log and throw a network error when fetch rejects', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    (fetch as any).mockRejectedValue(new TypeError('Failed to fetch'));
+    await withExpectedConsoleError(async () => {
+      (fetch as any).mockRejectedValue(new TypeError('Failed to fetch'));
 
-    const mockCache = await caches.open('any');
-    (mockCache.match as any).mockResolvedValue(null);
+      const mockCache = await caches.open('any');
+      (mockCache.match as any).mockResolvedValue(null);
 
-    await expect(fetchDefinition('offline')).rejects.toThrow(DictionaryLookupError);
+      await expect(fetchDefinition('offline')).rejects.toThrow(DictionaryLookupError);
+    });
   });
 
   it('should handle cache write error gracefully', async () => {
